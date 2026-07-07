@@ -6,6 +6,10 @@
 #include <cassert>
 #include <cstring>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <cstdint>
+
 #include "datasoftware/FileTraverser.h"
 #include "datasoftware/ArchiveWriter.h"
 #include "datasoftware/ArchiveReader.h"
@@ -514,12 +518,134 @@ void testCryptoLarge() {
     END_TEST("Crypto large data (1MB)");
 }
 
+// === Metadata tests ===
+
+void testMetadataRoundTrip() {
+    TEST("Metadata round-trip (v3 format)")
+        std::string testFile = testDir + "/metadata_test.txt";
+        std::string archiveFile = testDir + "/meta_archive.dat";
+        std::string restoreFile = testDir + "/restored/meta_test.txt";
+
+        { std::ofstream out(testFile); out << "hello"; }
+
+        // Backup and restore
+        BackupEngine::backup(testDir, archiveFile);
+        fs::remove_all(testDir + "/restored");
+        BackupEngine::restore(archiveFile, testDir + "/restored");
+
+        // Check file exists and content is correct
+        assert(fs::exists(restoreFile));
+        std::ifstream in(restoreFile);
+        std::string content; in >> content;
+        assert(content == "hello");
+        in.close();
+
+        // Verify v3 format was written
+        std::ifstream arc(archiveFile, std::ios::binary);
+        char magic[6]; arc.read(magic, 6);
+        arc.seekg(8);
+        uint32_t ver; arc.read(reinterpret_cast<char*>(&ver), 4);
+        assert(ver == 3);
+        arc.close();
+    END_TEST("Metadata round-trip (v3 format)");
+}
+
+void testMetadataTimestamp() {
+    TEST("Metadata timestamp preservation")
+        std::string testFile = testDir + "/time_test.txt";
+        std::string archiveFile = testDir + "/time_archive.dat";
+        std::string restoredDir = testDir + "/time_restored";
+
+        { std::ofstream out(testFile); out << "data"; }
+
+        // Read original timestamps using Windows API
+        int64_t origCreate = 0, origWrite = 0;
+        WIN32_FILE_ATTRIBUTE_DATA w32;
+        std::wstring wpath(testFile.begin(), testFile.end());
+        if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &w32)) {
+            origCreate = (static_cast<int64_t>(w32.ftCreationTime.dwHighDateTime) << 32)
+                        | w32.ftCreationTime.dwLowDateTime;
+            origWrite = (static_cast<int64_t>(w32.ftLastWriteTime.dwHighDateTime) << 32)
+                       | w32.ftLastWriteTime.dwLowDateTime;
+        }
+        assert(origCreate != 0);
+
+        // Backup and restore
+        BackupEngine::backup(testDir, archiveFile);
+        fs::remove_all(restoredDir);
+        BackupEngine::restore(archiveFile, restoredDir);
+
+        std::string restoredFile = restoredDir + "/time_test.txt";
+        assert(fs::exists(restoredFile));
+
+        // Check content preserved
+        std::ifstream in(restoredFile);
+        std::string content; in >> content;
+        assert(content == "data");
+        in.close();
+
+        // Compare timestamps after restore
+        int64_t restCreate = 0, restWrite = 0;
+        std::wstring rpath(restoredFile.begin(), restoredFile.end());
+        if (GetFileAttributesExW(rpath.c_str(), GetFileExInfoStandard, &w32)) {
+            restCreate = (static_cast<int64_t>(w32.ftCreationTime.dwHighDateTime) << 32)
+                        | w32.ftCreationTime.dwLowDateTime;
+            restWrite = (static_cast<int64_t>(w32.ftLastWriteTime.dwHighDateTime) << 32)
+                       | w32.ftLastWriteTime.dwLowDateTime;
+        }
+
+        assert(origCreate == restCreate);
+        assert(origWrite == restWrite);
+        std::cout << "(timestamps match) ";
+    END_TEST("Metadata timestamp preservation");
+}
+
+void testBackupFilesMetadata() {
+    TEST("backupFiles metadata preservation")
+        std::string testFile = testDir + "/single_file.txt";
+        std::string archiveFile = testDir + "/bf_archive.dat";
+        std::string restoredDir = testDir + "/bf_restored";
+
+        { std::ofstream out(testFile); out << "data"; }
+
+        // Set specific timestamp
+        int64_t origWrite = 0;
+        WIN32_FILE_ATTRIBUTE_DATA w32;
+        std::wstring wpath(testFile.begin(), testFile.end());
+        if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &w32)) {
+            origWrite = (static_cast<int64_t>(w32.ftLastWriteTime.dwHighDateTime) << 32)
+                       | w32.ftLastWriteTime.dwLowDateTime;
+        }
+
+        // Use backupFiles (simulates GUI "Add Files..." mode)
+        BackupEngine::backupFiles({testFile}, archiveFile);
+
+        // Restore
+        fs::remove_all(restoredDir);
+        BackupEngine::restore(archiveFile, restoredDir);
+
+        std::string restoredFile = restoredDir + "/single_file.txt";
+        int64_t restWrite = 0;
+        std::wstring rpath(restoredFile.begin(), restoredFile.end());
+        if (GetFileAttributesExW(rpath.c_str(), GetFileExInfoStandard, &w32)) {
+            restWrite = (static_cast<int64_t>(w32.ftLastWriteTime.dwHighDateTime) << 32)
+                       | w32.ftLastWriteTime.dwLowDateTime;
+        }
+
+        assert(origWrite == restWrite);
+        std::cout << "(backupFiles timestamps match) ";
+    END_TEST("backupFiles metadata preservation");
+}
+
 // === Main ===
 
 int main() {
     std::cout << "=== Data Backup Software - Basic Function Tests ===" << std::endl;
     std::cout << std::endl;
 
+    // Clean up any leftover test directory
+    std::error_code ec;
+    fs::remove_all(fs::temp_directory_path() / "dsbackup_test", ec);
     setup();
     testTraverseEmptyDir();
 
@@ -612,6 +738,19 @@ int main() {
 
     setup();
     testCryptoLarge();
+
+    // Metadata tests
+    std::cout << std::endl;
+    std::cout << "--- Metadata ---" << std::endl;
+
+    setup();
+    testMetadataRoundTrip();
+
+    setup();
+    testMetadataTimestamp();
+
+    setup();
+    testBackupFilesMetadata();
 
     std::cout << std::endl;
     std::cout << "=== Results: " << passed << " passed, " << failed << " failed ===" << std::endl;

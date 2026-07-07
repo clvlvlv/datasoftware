@@ -7,9 +7,36 @@
 #include <cctype>
 #include <ctime>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 namespace fs = std::filesystem;
 
 namespace datasoftware {
+
+// ---- read file metadata using Windows API ----
+static FileMetadata readFileMetadata(const fs::path& fullPath) {
+    FileMetadata md;
+
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (GetFileAttributesExW(fullPath.c_str(), GetFileExInfoStandard, &info)) {
+        // FILE_TIMEs are already 100-ns intervals since 1601-01-01 (FILETIME format)
+        md.createTime = (static_cast<int64_t>(info.ftCreationTime.dwHighDateTime) << 32)
+                       | static_cast<int64_t>(info.ftCreationTime.dwLowDateTime);
+        md.modTime = (static_cast<int64_t>(info.ftLastWriteTime.dwHighDateTime) << 32)
+                    | static_cast<int64_t>(info.ftLastWriteTime.dwLowDateTime);
+        md.accessTime = (static_cast<int64_t>(info.ftLastAccessTime.dwHighDateTime) << 32)
+                       | static_cast<int64_t>(info.ftLastAccessTime.dwLowDateTime);
+        md.attributes = info.dwFileAttributes;
+    }
+
+    return md;
+}
+
+// ---- attach metadata to a FileEntry ----
+static void attachMetadata(FileEntry& fe, const fs::path& fullPath) {
+    fe.metadata = readFileMetadata(fullPath);
+}
 
 // ---- helper: count files (fast) ----
 static size_t countFiles(const std::string& sourceDir) {
@@ -82,28 +109,19 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
                 auto ft = fs::last_write_time(entry.path());
                 int64_t mtime = 0;
                 try {
-                    // Convert to Unix timestamp (seconds since 1970-01-01)
-                    // On Windows, file_time_type uses 1601-01-01 epoch
-                    // On Unix, it uses 1970-01-01 epoch
                     auto s = std::chrono::duration_cast<std::chrono::seconds>(
                         ft.time_since_epoch()).count();
                     #ifdef _WIN32
-                    // Windows FILETIME epoch offset: 1601-01-01 to 1970-01-01
                     mtime = static_cast<int64_t>(s - 11644473600LL);
                     #else
                     mtime = static_cast<int64_t>(s);
                     #endif
                 } catch (...) { mtime = 0; }
 
-                std::string owner;
-                // On Windows, we can't easily get the owner without extra API calls
-                #ifndef _WIN32
-                struct stat st;
-                if (stat(entry.path().c_str(), &st) == 0) {
-                    struct passwd* pw = getpwuid(st.st_uid);
-                    if (pw) owner = pw->pw_name;
-                }
-                #endif
+                // On Windows, use GetFileInformationByHandle for metadata
+                auto md = readFileMetadata(entry.path());
+
+                std::string owner = md.owner;
 
                 uint64_t fsize = 0;
                 try { fsize = fs::file_size(entry.path()); } catch (...) {}
@@ -117,6 +135,7 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
 
             if (progress) progress(processed, total, relStr);
             fe = readFile(base.string(), relStr);
+            attachMetadata(fe, entry.path());
             ++processed;
         }
         else if (fs::is_fifo(status)) {

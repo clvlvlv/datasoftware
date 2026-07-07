@@ -7,6 +7,9 @@
 #include <stdexcept>
 #include <algorithm>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 namespace fs = std::filesystem;
 
 namespace datasoftware {
@@ -27,9 +30,6 @@ size_t BackupEngine::backup(const std::string& sourceDir,
     if (progress) progress(0, entries.size(), "Writing archive...");
     ArchiveWriter::write(archivePath, entries);
 
-    if (progress) progress(0, entries.size(), "Writing archive...");
-    ArchiveWriter::write(archivePath, entries);
-
     if (progress) progress(entries.size(), entries.size(), "Backup complete!");
     return entries.size();
 }
@@ -45,7 +45,6 @@ size_t BackupEngine::backupFiles(const std::vector<std::string>& filePaths,
 
     for (size_t i = 0; i < total; ++i) {
         const auto& fullPath = filePaths[i];
-        // Use just the filename (basename) for the archive
         fs::path p(fullPath);
         std::string fileName = p.filename().string();
 
@@ -60,7 +59,21 @@ size_t BackupEngine::backupFiles(const std::vector<std::string>& filePaths,
         if (size > 0) file.read(buf.data(), size);
         file.close();
 
-        entries.emplace_back(fileName, size, std::move(buf));
+        FileEntry fe(fileName, size, std::move(buf));
+
+        // Read metadata using Windows API
+        WIN32_FILE_ATTRIBUTE_DATA info;
+        if (GetFileAttributesExW(fs::path(fullPath).c_str(), GetFileExInfoStandard, &info)) {
+            fe.metadata.createTime = (static_cast<int64_t>(info.ftCreationTime.dwHighDateTime) << 32)
+                                    | static_cast<int64_t>(info.ftCreationTime.dwLowDateTime);
+            fe.metadata.modTime = (static_cast<int64_t>(info.ftLastWriteTime.dwHighDateTime) << 32)
+                                 | static_cast<int64_t>(info.ftLastWriteTime.dwLowDateTime);
+            fe.metadata.accessTime = (static_cast<int64_t>(info.ftLastAccessTime.dwHighDateTime) << 32)
+                                    | static_cast<int64_t>(info.ftLastAccessTime.dwLowDateTime);
+            fe.metadata.attributes = info.dwFileAttributes;
+        }
+
+        entries.push_back(std::move(fe));
     }
 
     if (progress) progress(total, total, "Writing archive...");
@@ -70,10 +83,44 @@ size_t BackupEngine::backupFiles(const std::vector<std::string>& filePaths,
     return total;
 }
 
+// ---- restore file metadata using Windows API ----
+static void restoreFileMetadata(const fs::path& filePath, const FileMetadata& md) {
+    if (md.isEmpty()) return;
+
+    HANDLE hFile = CreateFileW(
+        filePath.c_str(),
+        FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        0,  // No special flags required for regular files
+        nullptr);
+
+    if (hFile == INVALID_HANDLE_VALUE) return;
+
+    // Restore timestamps
+    if (md.createTime != 0 || md.modTime != 0 || md.accessTime != 0) {
+        FILETIME create, access, write;
+        create.dwLowDateTime  = static_cast<DWORD>(md.createTime & 0xFFFFFFFF);
+        create.dwHighDateTime = static_cast<DWORD>(md.createTime >> 32);
+        access.dwLowDateTime  = static_cast<DWORD>(md.accessTime & 0xFFFFFFFF);
+        access.dwHighDateTime = static_cast<DWORD>(md.accessTime >> 32);
+        write.dwLowDateTime   = static_cast<DWORD>(md.modTime & 0xFFFFFFFF);
+        write.dwHighDateTime  = static_cast<DWORD>(md.modTime >> 32);
+        SetFileTime(hFile, &create, &access, &write);
+    }
+
+    CloseHandle(hFile);
+
+    // Restore file attributes
+    if (md.attributes != 0) {
+        SetFileAttributesW(filePath.c_str(), md.attributes);
+    }
+}
+
 size_t BackupEngine::restore(const std::string& archivePath,
                              const std::string& restoreDir,
                              ProgressCallback progress) {
-    if (progress) progress(0, 1, "Reading archive...");
     std::vector<FileEntry> entries = ArchiveReader::read(archivePath);
     size_t total = entries.size();
 
@@ -149,6 +196,9 @@ size_t BackupEngine::restore(const std::string& archivePath,
             break;
         }
         }
+
+        // Restore metadata after writing the file
+        restoreFileMetadata(filePath, entry.metadata);
     }
 
     if (progress) progress(total, total, "Restore complete!");

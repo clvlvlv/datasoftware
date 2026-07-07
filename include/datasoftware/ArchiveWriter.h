@@ -10,7 +10,7 @@ namespace datasoftware {
 
 class ArchiveWriter {
 public:
-    static constexpr uint32_t ARCHIVE_VERSION = 2;
+    static constexpr uint32_t ARCHIVE_VERSION = 3;
 
     static void write(const std::string& archivePath,
                       const std::vector<FileEntry>& entries);
@@ -19,6 +19,7 @@ private:
     static void writeHeader(std::ofstream& out, uint32_t entryCount);
     static void writeEntry(std::ofstream& out, const FileEntry& entry);
     static void writeTypePayload(std::ofstream& out, const FileEntry& entry);
+    static void writeMetadata(std::ofstream& out, const FileMetadata& md);
 };
 
 } // namespace datasoftware

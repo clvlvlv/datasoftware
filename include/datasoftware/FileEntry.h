@@ -16,11 +16,28 @@ enum class FileType : uint8_t {
     Directory = 5
 };
 
+/// File metadata — timestamps use Windows FILETIME format
+/// (100-ns intervals since 1601-01-01 UTC, 0 = unknown)
+struct FileMetadata {
+    int64_t  createTime  = 0;
+    int64_t  modTime     = 0;
+    int64_t  accessTime  = 0;
+    uint32_t attributes  = 0;  // platform-specific
+    std::string owner;
+    std::string group;
+
+    bool isEmpty() const {
+        return createTime == 0 && modTime == 0 && accessTime == 0 &&
+               attributes == 0 && owner.empty() && group.empty();
+    }
+};
+
 struct FileEntry {
     std::string  relativePath;
     FileType     fileType     = FileType::Regular;
     uint64_t     fileSize     = 0;
     std::vector<char> data;
+    FileMetadata metadata;
 
     // Symlink
     std::string  symlinkTarget;

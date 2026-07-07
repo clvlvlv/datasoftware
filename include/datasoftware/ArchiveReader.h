@@ -13,8 +13,8 @@ public:
 
 private:
     static void readHeader(std::ifstream& in, uint32_t& entryCount, uint32_t& version);
-    static FileEntry readEntryV1(std::ifstream& in);
-    static FileEntry readEntryV2(std::ifstream& in);
+    static FileEntry readEntryCommon(std::ifstream& in); // reads path+type+payload
+    static void readMetadata(std::ifstream& in, FileMetadata& md);
 };
 
 } // namespace datasoftware
