@@ -21,6 +21,9 @@ set(SOURCES
     src/ArchiveWriter.cpp
     src/ArchiveReader.cpp
     src/BackupEngine.cpp
+    src/Compressor.cpp
+    src/BackupFilter.cpp
+    src/Crypto.cpp
 )
 
 set(HEADERS
@@ -29,12 +32,18 @@ set(HEADERS
     include/datasoftware/ArchiveWriter.h
     include/datasoftware/ArchiveReader.h
     include/datasoftware/BackupEngine.h
+    include/datasoftware/Compressor.h
+    include/datasoftware/BackupFilter.h
+    include/datasoftware/Crypto.h
 )
 
 # Core static library
 add_library(datasoftware STATIC ${SOURCES} ${HEADERS})
 target_include_directories(datasoftware PUBLIC include)
 target_link_libraries(datasoftware PUBLIC Qt5::Core)
+if(WIN32)
+    target_link_libraries(datasoftware PUBLIC bcrypt)
+endif()
 
 # CLI executable
 add_executable(dsbackup src/main.cpp)

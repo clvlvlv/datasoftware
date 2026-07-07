@@ -3,6 +3,9 @@
 #include <fstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <chrono>
+#include <cctype>
+#include <ctime>
 
 namespace fs = std::filesystem;
 
@@ -15,32 +18,36 @@ static size_t countFiles(const std::string& sourceDir) {
     auto opts = fs::directory_options::skip_permission_denied;
     for (auto it = fs::recursive_directory_iterator(base, opts);
          it != fs::recursive_directory_iterator(); ++it) {
-        // Skip symlinks to avoid double-counting on Windows
         if (fs::is_symlink(it->symlink_status())) continue;
         if (fs::is_regular_file(it->symlink_status())) ++count;
     }
     return count;
 }
 
-// ---- traverse without progress ----
+// ---- traverse without progress or filter ----
 std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir) {
-    return traverse(sourceDir, nullptr);
+    return traverse(sourceDir, nullptr, BackupFilter{});
 }
 
-// ---- traverse with progress ----
+// ---- traverse with progress, no filter ----
 std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
                                                 ProgressCallback progress) {
+    return traverse(sourceDir, progress, BackupFilter{});
+}
+
+// ---- traverse with progress + filter ----
+std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
+                                                ProgressCallback progress,
+                                                const BackupFilter& filter) {
     fs::path base(sourceDir);
     if (!fs::exists(base) || !fs::is_directory(base)) {
         throw std::runtime_error("Source directory does not exist: " + sourceDir);
     }
 
-    // Fast count for progress bar
     size_t total = countFiles(sourceDir);
-    if (progress) progress(0, total, "Counting files...");
+    if (progress) progress(0, total, "Scanning...");
 
     auto opts = fs::directory_options::skip_permission_denied;
-
     std::unordered_map<std::string, size_t> seen;
     std::vector<FileEntry> entries;
     size_t processed = 0;
@@ -63,9 +70,52 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
             fe = FileEntry(relStr, FileType::Directory, 0, std::vector<char>{});
         }
         else if (fs::is_regular_file(status)) {
-            if (progress) {
-                progress(processed, total, relStr);
+            // Apply filter before reading
+            if (filter.isActive()) {
+                std::string ext;
+                auto dot = relStr.rfind('.');
+                if (dot != std::string::npos) {
+                    ext = relStr.substr(dot);
+                    for (auto& c : ext) c = static_cast<char>(std::tolower(c));
+                }
+
+                auto ft = fs::last_write_time(entry.path());
+                int64_t mtime = 0;
+                try {
+                    // Convert to Unix timestamp (seconds since 1970-01-01)
+                    // On Windows, file_time_type uses 1601-01-01 epoch
+                    // On Unix, it uses 1970-01-01 epoch
+                    auto s = std::chrono::duration_cast<std::chrono::seconds>(
+                        ft.time_since_epoch()).count();
+                    #ifdef _WIN32
+                    // Windows FILETIME epoch offset: 1601-01-01 to 1970-01-01
+                    mtime = static_cast<int64_t>(s - 11644473600LL);
+                    #else
+                    mtime = static_cast<int64_t>(s);
+                    #endif
+                } catch (...) { mtime = 0; }
+
+                std::string owner;
+                // On Windows, we can't easily get the owner without extra API calls
+                #ifndef _WIN32
+                struct stat st;
+                if (stat(entry.path().c_str(), &st) == 0) {
+                    struct passwd* pw = getpwuid(st.st_uid);
+                    if (pw) owner = pw->pw_name;
+                }
+                #endif
+
+                uint64_t fsize = 0;
+                try { fsize = fs::file_size(entry.path()); } catch (...) {}
+
+                if (!filter.matches(relStr, ext, fsize, mtime, owner)) {
+                    if (progress) progress(processed, total, "[filtered] " + relStr);
+                    ++processed;
+                    continue;
+                }
             }
+
+            if (progress) progress(processed, total, relStr);
             fe = readFile(base.string(), relStr);
             ++processed;
         }
@@ -93,7 +143,7 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
         entries.push_back(std::move(fe));
     }
 
-    if (progress) progress(total, total, "Done scanning.");
+    if (progress) progress(total, total, "Done.");
     return entries;
 }
 

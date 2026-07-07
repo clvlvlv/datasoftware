@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -13,8 +14,18 @@ namespace datasoftware {
 size_t BackupEngine::backup(const std::string& sourceDir,
                             const std::string& archivePath,
                             ProgressCallback progress) {
+    return backup(sourceDir, archivePath, BackupFilter{}, progress);
+}
+
+size_t BackupEngine::backup(const std::string& sourceDir,
+                            const std::string& archivePath,
+                            const BackupFilter& filter,
+                            ProgressCallback progress) {
     if (progress) progress(0, 1, "Scanning directory...");
-    std::vector<FileEntry> entries = FileTraverser::traverse(sourceDir, progress);
+    std::vector<FileEntry> entries = FileTraverser::traverse(sourceDir, progress, filter);
+
+    if (progress) progress(0, entries.size(), "Writing archive...");
+    ArchiveWriter::write(archivePath, entries);
 
     if (progress) progress(0, entries.size(), "Writing archive...");
     ArchiveWriter::write(archivePath, entries);

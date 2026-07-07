@@ -10,6 +10,8 @@
 #include "datasoftware/ArchiveWriter.h"
 #include "datasoftware/ArchiveReader.h"
 #include "datasoftware/BackupEngine.h"
+#include "datasoftware/Compressor.h"
+#include "datasoftware/Crypto.h"
 
 namespace fs = std::filesystem;
 using namespace datasoftware;
@@ -333,6 +335,185 @@ void testBackupRestoreSymlink() {
     END_TEST("Backup and restore with symlink");
 }
 
+// === Compression tests ===
+
+void testRleRoundTrip() {
+    TEST("RLE round-trip")
+        std::vector<char> original = {
+            'A', 'A', 'A', 'B', 'B', 'C', 'D', 'D', 'D', 'D'
+        };
+        auto compressed = Compressor::compress(original, CompressAlgo::RLE);
+        auto decompressed = Compressor::decompress(compressed, CompressAlgo::RLE);
+        assert(decompressed.size() == original.size());
+        assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+        // Compression should be smaller for repetitive data
+        assert(compressed.size() < original.size());
+    END_TEST("RLE round-trip");
+}
+
+void testRleNoRepeat() {
+    TEST("RLE with no repeats")
+        std::vector<char> original = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+        auto compressed = Compressor::compress(original, CompressAlgo::RLE);
+        auto decompressed = Compressor::decompress(compressed, CompressAlgo::RLE);
+        assert(decompressed.size() == original.size());
+        assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+    END_TEST("RLE with no repeats");
+}
+
+void testRleEmpty() {
+    TEST("RLE empty input")
+        std::vector<char> original;
+        auto compressed = Compressor::compress(original, CompressAlgo::RLE);
+        auto decompressed = Compressor::decompress(compressed, CompressAlgo::RLE);
+        assert(decompressed.empty());
+    END_TEST("RLE empty input");
+}
+
+void testLz77RoundTrip() {
+    TEST("LZ77 round-trip")
+        std::string text = "ABABABABABABABABABABABABABABABAB";
+        std::vector<char> original(text.begin(), text.end());
+        auto compressed = Compressor::compress(original, CompressAlgo::LZ77);
+        auto decompressed = Compressor::decompress(compressed, CompressAlgo::LZ77);
+        assert(decompressed.size() == original.size());
+        assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+        // LZ77 should compress repetitive patterns well
+        assert(compressed.size() < original.size());
+    END_TEST("LZ77 round-trip");
+}
+
+void testLz77General() {
+    TEST("LZ77 general data")
+        std::string text = "The quick brown fox jumps over the lazy dog. "
+                           "The quick brown fox jumps over the lazy dog again!";
+        std::vector<char> original(text.begin(), text.end());
+        auto compressed = Compressor::compress(original, CompressAlgo::LZ77);
+        auto decompressed = Compressor::decompress(compressed, CompressAlgo::LZ77);
+        assert(decompressed.size() == original.size());
+        assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+    END_TEST("LZ77 general data");
+}
+
+void testCompressFileRoundTrip() {
+    TEST("Compress file round-trip (RLE)")
+        std::string testFile = testDir + "/compress_test.bin";
+        std::string compFile = testDir + "/compressed.rlz";
+        std::string decompFile = testDir + "/decompressed.bin";
+
+        std::vector<char> data(5000, 'X');
+        for (size_t i = 0; i < 100; ++i) data[i * 50] = static_cast<char>(i);
+
+        {
+            std::ofstream out(testFile, std::ios::binary);
+            out.write(data.data(), data.size());
+        }
+
+        Compressor::compressFile(testFile, compFile, CompressAlgo::RLE);
+        Compressor::decompressFile(compFile, decompFile, CompressAlgo::RLE);
+
+        std::ifstream in(decompFile, std::ios::binary | std::ios::ate);
+        auto size = in.tellg();
+        assert(static_cast<size_t>(size) == data.size());
+        in.seekg(0);
+        std::vector<char> result(size);
+        in.read(result.data(), size);
+        assert(std::memcmp(result.data(), data.data(), data.size()) == 0);
+    END_TEST("Compress file round-trip (RLE)");
+}
+
+void testHuffmanRoundTrip() {
+    TEST("Huffman round-trip")
+        std::vector<char> orig = {
+            'A', 'B', 'C', 'A', 'B', 'C', 'A', 'B', 'C',
+            'A', 'A', 'A', 'A', 'B', 'B', 'B', 'C', 'C'
+        };
+        auto comp = Compressor::compress(orig, CompressAlgo::Huffman);
+        auto dec = Compressor::decompress(comp, CompressAlgo::Huffman);
+        assert(dec.size() == orig.size());
+        assert(std::memcmp(dec.data(), orig.data(), orig.size()) == 0);
+    END_TEST("Huffman round-trip");
+}
+
+void testHuffmanAllBytes() {
+    TEST("Huffman all 256 byte values")
+        std::vector<char> orig(256 * 2, 0);
+        // Each byte value appears twice (balanced)
+        for (int i = 0; i < 256; ++i) {
+            orig[i] = static_cast<char>(i);
+            orig[256 + i] = static_cast<char>(i);
+        }
+        auto comp = Compressor::compress(orig, CompressAlgo::Huffman);
+        auto dec = Compressor::decompress(comp, CompressAlgo::Huffman);
+        assert(dec.size() == orig.size());
+        assert(std::memcmp(dec.data(), orig.data(), orig.size()) == 0);
+        // With balanced frequencies, compression ratio should be reasonable
+        // (can't be smaller due to overhead, but shouldn't error)
+    END_TEST("Huffman all 256 byte values");
+}
+
+void testHuffmanEmpty() {
+    TEST("Huffman empty input")
+        std::vector<char> orig;
+        auto comp = Compressor::compress(orig, CompressAlgo::Huffman);
+        auto dec = Compressor::decompress(comp, CompressAlgo::Huffman);
+        assert(dec.empty());
+    END_TEST("Huffman empty input");
+}
+
+void testHuffmanLargeData() {
+    TEST("Huffman large data (100KB)")
+        std::vector<char> orig(100000, 0);
+        for (size_t i = 0; i < 100000; ++i)
+            orig[i] = static_cast<char>((i * 7 + 13) % 251); // pseudo-random
+        auto comp = Compressor::compress(orig, CompressAlgo::Huffman);
+        auto dec = Compressor::decompress(comp, CompressAlgo::Huffman);
+        assert(dec.size() == orig.size());
+        assert(std::memcmp(dec.data(), orig.data(), orig.size()) == 0);
+        std::cout << "(" << comp.size() << "/" << orig.size() << " bytes) ";
+    END_TEST("Huffman large data (100KB)");
+}
+
+// === Crypto tests ===
+
+void testCryptoRoundTrip() {
+    TEST("Crypto encrypt/decrypt round-trip")
+        std::vector<char> orig = {'H','e','l','l','o',' ','W','o','r','l','d','!','1','2','3','4','5'};
+        std::string pwd = "test123";
+        auto enc = Crypto::encrypt(orig, pwd);
+        assert(Crypto::isEncrypted(enc));
+        auto dec = Crypto::decrypt(enc, pwd);
+        assert(dec.size() == orig.size());
+        assert(std::memcmp(dec.data(), orig.data(), orig.size()) == 0);
+    END_TEST("Crypto encrypt/decrypt round-trip");
+}
+
+void testCryptoWrongPassword() {
+    TEST("Crypto wrong password rejected")
+        std::vector<char> orig = {'t','e','s','t'};
+        std::string pwd = "correct";
+        auto enc = Crypto::encrypt(orig, pwd);
+        bool caught = false;
+        try {
+            Crypto::decrypt(enc, "wrong");
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    END_TEST("Crypto wrong password rejected");
+}
+
+void testCryptoLarge() {
+    TEST("Crypto large data (1MB)")
+        std::vector<char> orig(1000000, 'A');
+        std::string pwd = "longpassword123456";
+        auto enc = Crypto::encrypt(orig, pwd);
+        auto dec = Crypto::decrypt(enc, pwd);
+        assert(dec.size() == orig.size());
+        assert(std::memcmp(dec.data(), orig.data(), orig.size()) == 0);
+    END_TEST("Crypto large data (1MB)");
+}
+
 // === Main ===
 
 int main() {
@@ -384,6 +565,53 @@ int main() {
 
     setup();
     testBackupRestoreSymlink();
+
+    // Compression tests
+    std::cout << std::endl;
+    std::cout << "--- Compression ---" << std::endl;
+
+    setup();
+    testRleRoundTrip();
+
+    setup();
+    testRleNoRepeat();
+
+    setup();
+    testRleEmpty();
+
+    setup();
+    testLz77RoundTrip();
+
+    setup();
+    testLz77General();
+
+    setup();
+    testCompressFileRoundTrip();
+
+    setup();
+    testHuffmanRoundTrip();
+
+    setup();
+    testHuffmanAllBytes();
+
+    setup();
+    testHuffmanEmpty();
+
+    setup();
+    testHuffmanLargeData();
+
+    // Crypto tests
+    std::cout << std::endl;
+    std::cout << "--- Encryption ---" << std::endl;
+
+    setup();
+    testCryptoRoundTrip();
+
+    setup();
+    testCryptoWrongPassword();
+
+    setup();
+    testCryptoLarge();
 
     std::cout << std::endl;
     std::cout << "=== Results: " << passed << " passed, " << failed << " failed ===" << std::endl;
