@@ -15,7 +15,11 @@
 #include <QElapsedTimer>
 #include <QScrollArea>
 #include <QDate>
+#include <QFileInfo>
 #include <filesystem>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 namespace datasoftware {
 
@@ -461,6 +465,108 @@ void MainWindow::setupUI() {
     encLayout->addStretch();
 
     tabs->addTab(encTab, "Encryption");
+
+    // ========== TAB 5: Pack & Unpack ==========
+    auto* packTab = new QWidget();
+    auto* packLayout = new QVBoxLayout(packTab);
+    packLayout->setSpacing(10);
+    packLayout->setContentsMargins(12, 12, 12, 12);
+
+    // --- Pack section ---
+    auto* packLabel = new QLabel("Pack (bundle files into a single archive)");
+    packLabel->setStyleSheet("font-weight: bold;");
+    packLayout->addWidget(packLabel);
+
+    auto* packBtnRow = new QHBoxLayout();
+    auto* packAddBtn = new QPushButton("Add Files...");
+    connect(packAddBtn, &QPushButton::clicked, this, &MainWindow::onPackAddFiles);
+    packBtnRow->addWidget(packAddBtn);
+    auto* packClearBtn = new QPushButton("Clear");
+    connect(packClearBtn, &QPushButton::clicked, this, &MainWindow::onPackClear);
+    packBtnRow->addWidget(packClearBtn);
+    packBtnRow->addStretch();
+    packLayout->addLayout(packBtnRow);
+
+    m_packPreview = new QTreeWidget();
+    m_packPreview->setHeaderLabels({"Name", "Size"});
+    m_packPreview->setRootIsDecorated(false);
+    m_packPreview->setAlternatingRowColors(true);
+    m_packPreview->setMinimumHeight(100);
+    m_packPreview->setMaximumHeight(160);
+    m_packPreview->header()->setStretchLastSection(false);
+    m_packPreview->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_packPreview->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    packLayout->addWidget(m_packPreview);
+
+    m_packSummary = new QLabel("");
+    m_packSummary->setStyleSheet("color: #666;");
+    packLayout->addWidget(m_packSummary);
+
+    auto* packOutRow = new QHBoxLayout();
+    packOutRow->addWidget(new QLabel("Output:"));
+    m_packOutputEdit = new QLineEdit();
+    m_packOutputEdit->setPlaceholderText("Select output archive...");
+    auto* packBrowseOutBtn = new QPushButton("Browse...");
+    packBrowseOutBtn->setFixedWidth(90);
+    connect(packBrowseOutBtn, &QPushButton::clicked, this, &MainWindow::onPackBrowseOutput);
+    packOutRow->addWidget(m_packOutputEdit);
+    packOutRow->addWidget(packBrowseOutBtn);
+    packLayout->addLayout(packOutRow);
+
+    m_packBtn = new QPushButton("Pack");
+    m_packBtn->setMinimumHeight(32);
+    connect(m_packBtn, &QPushButton::clicked, this, &MainWindow::onPack);
+    packLayout->addWidget(m_packBtn);
+
+    packLayout->addWidget(new QFrame());
+
+    // --- Unpack section ---
+    auto* unpackLabel = new QLabel("Unpack (extract files from an archive)");
+    unpackLabel->setStyleSheet("font-weight: bold;");
+    packLayout->addWidget(unpackLabel);
+
+    auto* unpackInRow = new QHBoxLayout();
+    unpackInRow->addWidget(new QLabel("Archive:"));
+    m_unpackInputEdit = new QLineEdit();
+    m_unpackInputEdit->setPlaceholderText("Select archive file to unpack...");
+    auto* unpackBrowseInBtn = new QPushButton("Browse...");
+    unpackBrowseInBtn->setFixedWidth(90);
+    connect(unpackBrowseInBtn, &QPushButton::clicked, this, &MainWindow::onUnpackBrowseInput);
+    unpackInRow->addWidget(m_unpackInputEdit);
+    unpackInRow->addWidget(unpackBrowseInBtn);
+    packLayout->addLayout(unpackInRow);
+
+    auto* unpackOutRow = new QHBoxLayout();
+    unpackOutRow->addWidget(new QLabel("Output:"));
+    m_unpackOutputEdit = new QLineEdit();
+    m_unpackOutputEdit->setPlaceholderText("Select output directory...");
+    auto* unpackBrowseOutBtn = new QPushButton("Browse...");
+    unpackBrowseOutBtn->setFixedWidth(90);
+    connect(unpackBrowseOutBtn, &QPushButton::clicked, this, &MainWindow::onUnpackBrowseOutput);
+    unpackOutRow->addWidget(m_unpackOutputEdit);
+    unpackOutRow->addWidget(unpackBrowseOutBtn);
+    packLayout->addLayout(unpackOutRow);
+
+    m_unpackBtn = new QPushButton("Unpack");
+    m_unpackBtn->setMinimumHeight(32);
+    connect(m_unpackBtn, &QPushButton::clicked, this, &MainWindow::onUnpack);
+    packLayout->addWidget(m_unpackBtn);
+
+    packLayout->addWidget(new QFrame());
+
+    // Status
+    auto* packStatusLabel = new QLabel("Status");
+    packStatusLabel->setStyleSheet("font-weight: bold;");
+    packLayout->addWidget(packStatusLabel);
+    m_packProgress = new QProgressBar();
+    m_packProgress->setRange(0, 100);
+    m_packProgress->setValue(0);
+    packLayout->addWidget(m_packProgress);
+    m_packStatus = new QLabel("Ready.");
+    packLayout->addWidget(m_packStatus);
+    packLayout->addStretch();
+
+    tabs->addTab(packTab, "Pack && Unpack");
     mainLayout->addWidget(tabs);
     setCentralWidget(central);
     refreshFilePreview();
@@ -677,6 +783,11 @@ void MainWindow::setInputsEnabled(bool en) {
     m_encPwdEdit->setEnabled(en);
     m_encryptBtn->setEnabled(en);
     m_decryptBtn->setEnabled(en);
+    m_packBtn->setEnabled(en);
+    m_unpackBtn->setEnabled(en);
+    m_packOutputEdit->setEnabled(en);
+    m_unpackInputEdit->setEnabled(en);
+    m_unpackOutputEdit->setEnabled(en);
 }
 
 // =====================================================================
@@ -905,7 +1016,221 @@ void MainWindow::onDecryptFile() {
 
 void MainWindow::onEncFinished(bool ok, const QString& msg) {
     (void)ok; (void)msg;
-    // Used by worker thread; standalone uses direct calls instead
+}
+
+// =====================================================================
+//  Pack/Unpack - Worker
+// =====================================================================
+
+void PackWorker::run() {
+    try {
+        if (m_action == Pack) {
+            // Read files into entries
+            std::vector<datasoftware::FileEntry> entries;
+            size_t total = m_fileList.size();
+            for (int i = 0; i < m_fileList.size(); ++i) {
+                std::string path = m_fileList[i].toStdString();
+                std::string name = std::filesystem::path(path).filename().string();
+                emit progressUpdated(i, total, QString::fromStdString(name));
+
+                std::ifstream in(path, std::ios::binary | std::ios::ate);
+                auto sz = in.tellg(); in.seekg(0);
+                std::vector<char> buf(static_cast<size_t>(sz));
+                if (sz > 0) in.read(buf.data(), sz);
+                in.close();
+
+                datasoftware::FileEntry fe(name, static_cast<uint64_t>(sz), std::move(buf));
+
+                // Read metadata
+                WIN32_FILE_ATTRIBUTE_DATA info;
+                if (GetFileAttributesExW(std::filesystem::path(path).c_str(),
+                                         GetFileExInfoStandard, &info)) {
+                    fe.metadata.createTime = (static_cast<int64_t>(info.ftCreationTime.dwHighDateTime) << 32)
+                                            | info.ftCreationTime.dwLowDateTime;
+                    fe.metadata.modTime = (static_cast<int64_t>(info.ftLastWriteTime.dwHighDateTime) << 32)
+                                         | info.ftLastWriteTime.dwLowDateTime;
+                    fe.metadata.accessTime = (static_cast<int64_t>(info.ftLastAccessTime.dwHighDateTime) << 32)
+                                            | info.ftLastAccessTime.dwLowDateTime;
+                    fe.metadata.attributes = info.dwFileAttributes;
+                }
+
+                entries.push_back(std::move(fe));
+            }
+
+            emit progressUpdated(total, total, "Writing archive...");
+            datasoftware::ArchiveWriter::write(m_dst, entries);
+            emit operationFinished(true, QString("Packed %1 files into %2")
+                                   .arg(total).arg(QString::fromStdString(m_dst)));
+        } else {
+            // Unpack
+            emit progressUpdated(0, 1, "Reading archive...");
+            auto entries = datasoftware::ArchiveReader::read(m_src);
+
+            std::filesystem::path outDir(m_dst);
+            std::filesystem::create_directories(outDir);
+
+            for (size_t i = 0; i < entries.size(); ++i) {
+                const auto& entry = entries[i];
+                emit progressUpdated(i, entries.size(),
+                                     QString::fromStdString(entry.relativePath));
+
+                auto filePath = outDir / entry.relativePath;
+                std::filesystem::create_directories(filePath.parent_path());
+
+                std::ofstream out(filePath, std::ios::binary);
+                if (entry.fileSize > 0)
+                    out.write(entry.data.data(), entry.fileSize);
+                out.close();
+
+                // Restore metadata
+                if (!entry.metadata.isEmpty()) {
+                    HANDLE hFile = CreateFileW(filePath.c_str(), FILE_WRITE_ATTRIBUTES,
+                                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                               nullptr, OPEN_EXISTING, 0, nullptr);
+                    if (hFile != INVALID_HANDLE_VALUE) {
+                        FILETIME ct, at, wt;
+                        ct.dwLowDateTime  = static_cast<DWORD>(entry.metadata.createTime & 0xFFFFFFFF);
+                        ct.dwHighDateTime = static_cast<DWORD>(entry.metadata.createTime >> 32);
+                        at.dwLowDateTime  = static_cast<DWORD>(entry.metadata.accessTime & 0xFFFFFFFF);
+                        at.dwHighDateTime = static_cast<DWORD>(entry.metadata.accessTime >> 32);
+                        wt.dwLowDateTime  = static_cast<DWORD>(entry.metadata.modTime & 0xFFFFFFFF);
+                        wt.dwHighDateTime = static_cast<DWORD>(entry.metadata.modTime >> 32);
+                        SetFileTime(hFile, &ct, &at, &wt);
+                        CloseHandle(hFile);
+                    }
+                    if (entry.metadata.attributes != 0)
+                        SetFileAttributesW(filePath.c_str(), entry.metadata.attributes);
+                }
+            }
+
+            emit operationFinished(true, QString("Unpacked %1 files to %2")
+                                   .arg(entries.size()).arg(QString::fromStdString(m_dst)));
+        }
+    } catch (const std::exception& e) {
+        emit operationFinished(false, QString("Error: %1").arg(e.what()));
+    }
+}
+
+// =====================================================================
+//  Pack/Unpack - Slots
+// =====================================================================
+
+void MainWindow::onPackAddFiles() {
+    QStringList files = QFileDialog::getOpenFileNames(this, "Select Files to Pack");
+    if (files.isEmpty()) return;
+    m_packFiles.append(files);
+    refreshPackPreview();
+}
+
+void MainWindow::onPackClear() {
+    m_packFiles.clear();
+    refreshPackPreview();
+}
+
+void MainWindow::refreshPackPreview() {
+    m_packPreview->clear();
+    uint64_t totalSize = 0;
+    for (const auto& f : m_packFiles) {
+        QFileInfo fi(f);
+        auto* item = new QTreeWidgetItem();
+        item->setText(0, fi.fileName());
+        qint64 sz = fi.size();
+        item->setText(1, sz >= 1048576 ? QString("%1 MB").arg(sz/1048576.0,0,'f',2)
+                     : sz >= 1024 ? QString("%1 KB").arg(sz/1024.0,0,'f',1)
+                     : QString("%1 B").arg(sz));
+        m_packPreview->addTopLevelItem(item);
+        totalSize += static_cast<uint64_t>(sz);
+    }
+    if (!m_packFiles.isEmpty()) {
+        double mb = static_cast<double>(totalSize) / 1048576.0;
+        m_packSummary->setText(QString("%1 files, %2 MB total")
+                               .arg(m_packFiles.size()).arg(mb, 0, 'f', 2));
+    } else {
+        m_packSummary->clear();
+    }
+}
+
+void MainWindow::onPackBrowseOutput() {
+    QString f = QFileDialog::getSaveFileName(this, "Select Output Archive",
+                                              m_packOutputEdit->text(),
+                                              "DAT (*.dat);;All Files (*)");
+    if (!f.isEmpty()) m_packOutputEdit->setText(f);
+}
+
+void MainWindow::onUnpackBrowseInput() {
+    QString f = QFileDialog::getOpenFileName(this, "Select Archive to Unpack",
+                                              m_unpackInputEdit->text(),
+                                              "DAT (*.dat);;All Files (*)");
+    if (!f.isEmpty()) m_unpackInputEdit->setText(f);
+}
+
+void MainWindow::onUnpackBrowseOutput() {
+    QString d = QFileDialog::getSaveFileName(this, "Select Output Directory",
+                                              m_unpackOutputEdit->text(),
+                                              "Folder (*)");
+    if (!d.isEmpty()) m_unpackOutputEdit->setText(d);
+}
+
+void MainWindow::onPack() {
+    if (m_packFiles.isEmpty()) {
+        QMessageBox::warning(this, "Missing Input", "Please add files to pack.");
+        return;
+    }
+    QString dst = m_packOutputEdit->text().trimmed();
+    if (dst.isEmpty()) {
+        QMessageBox::warning(this, "Missing Input", "Please specify output archive path.");
+        return;
+    }
+
+    setInputsEnabled(false);
+    m_packProgress->setValue(0);
+    m_packProgress->setVisible(true);
+    m_packStatus->setText("Packing...");
+    QApplication::processEvents();
+
+    auto* w = new PackWorker(m_packFiles, dst.toStdString());
+    connect(w, &PackWorker::progressUpdated, this, &MainWindow::onPackProgress);
+    connect(w, &PackWorker::operationFinished, this, &MainWindow::onPackFinished);
+    connect(w, &QThread::finished, w, &QObject::deleteLater);
+    w->start();
+}
+
+void MainWindow::onUnpack() {
+    QString src = m_unpackInputEdit->text().trimmed();
+    QString dst = m_unpackOutputEdit->text().trimmed();
+    if (src.isEmpty() || dst.isEmpty()) {
+        QMessageBox::warning(this, "Missing Input",
+                             "Please specify archive file and output directory.");
+        return;
+    }
+
+    setInputsEnabled(false);
+    m_packProgress->setValue(0);
+    m_packProgress->setVisible(true);
+    m_packStatus->setText("Unpacking...");
+    QApplication::processEvents();
+
+    auto* w = new PackWorker(src.toStdString(), dst.toStdString());
+    connect(w, &PackWorker::progressUpdated, this, &MainWindow::onPackProgress);
+    connect(w, &PackWorker::operationFinished, this, &MainWindow::onPackFinished);
+    connect(w, &QThread::finished, w, &QObject::deleteLater);
+    w->start();
+}
+
+void MainWindow::onPackProgress(quint64 current, quint64 total, const QString& file) {
+    if (total > 0) {
+        m_packProgress->setRange(0, static_cast<int>(total));
+        m_packProgress->setValue(static_cast<int>(current));
+    }
+    if (!file.isEmpty()) m_packStatus->setText(file);
+}
+
+void MainWindow::onPackFinished(bool ok, const QString& msg) {
+    setInputsEnabled(true);
+    m_packProgress->setValue(m_packProgress->maximum());
+    m_packStatus->setText(msg);
+    if (ok) QMessageBox::information(this, "Success", msg);
+    else    QMessageBox::critical(this, "Error", msg);
 }
 
 } // namespace datasoftware

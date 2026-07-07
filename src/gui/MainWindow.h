@@ -18,6 +18,8 @@
 
 #include <datasoftware/Compressor.h>
 #include <datasoftware/BackupFilter.h>
+#include <datasoftware/ArchiveWriter.h>
+#include <datasoftware/ArchiveReader.h>
 
 namespace datasoftware {
 
@@ -78,6 +80,32 @@ private:
     Action m_action;
 };
 
+// ===== Worker for pack/unpack =====
+class PackWorker : public QThread {
+    Q_OBJECT
+public:
+    enum Action { Pack, Unpack };
+
+    PackWorker(const QStringList& files, const std::string& dst)
+        : m_fileList(files), m_dst(dst), m_action(Pack) {}
+
+    PackWorker(const std::string& src, const std::string& dst)
+        : m_src(src), m_dst(dst), m_action(Unpack) {}
+
+signals:
+    void progressUpdated(quint64 current, quint64 total, const QString& currentFile);
+    void operationFinished(bool success, const QString& message);
+
+protected:
+    void run() override;
+
+private:
+    std::string m_src;
+    QStringList m_fileList;
+    std::string m_dst;
+    Action m_action;
+};
+
 // ===== Main Window =====
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -117,12 +145,24 @@ private slots:
     void onDecompress();
     void onCompFinished(bool success, const QString& message);
 
+    // Pack/Unpack
+    void onPackAddFiles();
+    void onPackClear();
+    void onPackBrowseOutput();
+    void onUnpackBrowseInput();
+    void onUnpackBrowseOutput();
+    void onPack();
+    void onUnpack();
+    void onPackProgress(quint64 current, quint64 total, const QString& currentFile);
+    void onPackFinished(bool success, const QString& message);
+
 private:
     void setupUI();
     void setInputsEnabled(bool enabled);
     void startBackup();
     void startRestore();
     void refreshFilePreview();
+    void refreshPackPreview();
     BackupFilter collectFilter() const;
 
     // ---- Data state ----
@@ -174,6 +214,18 @@ private:
     QPushButton*  m_decryptBtn;
     QProgressBar* m_encProgress;
     QLabel*       m_encStatus;
+
+    // ---- Pack/Unpack UI ----
+    QStringList   m_packFiles;
+    QTreeWidget*  m_packPreview;
+    QLabel*       m_packSummary;
+    QPushButton*  m_packBtn;
+    QPushButton*  m_unpackBtn;
+    QLineEdit*    m_packOutputEdit;
+    QLineEdit*    m_unpackInputEdit;
+    QLineEdit*    m_unpackOutputEdit;
+    QProgressBar* m_packProgress;
+    QLabel*       m_packStatus;
 };
 
 } // namespace datasoftware
