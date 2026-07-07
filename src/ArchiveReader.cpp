@@ -19,10 +19,24 @@ std::vector<FileEntry> ArchiveReader::read(const std::string& archivePath) {
     entries.reserve(entryCount);
 
     for (uint32_t i = 0; i < entryCount; ++i) {
-        if (version >= 2) {
-            entries.push_back(readEntryV2(in));
+        if (version == 1) {
+            // v1: just path + size + data (no file type)
+            uint32_t pathLen;
+            in.read(reinterpret_cast<char*>(&pathLen), sizeof(pathLen));
+            std::string path(pathLen, '\0');
+            in.read(&path[0], pathLen);
+            uint64_t fileSize;
+            in.read(reinterpret_cast<char*>(&fileSize), sizeof(fileSize));
+            std::vector<char> data(fileSize);
+            if (fileSize > 0) in.read(data.data(), fileSize);
+            entries.emplace_back(std::move(path), fileSize, std::move(data));
         } else {
-            entries.push_back(readEntryV1(in));
+            // v2/v3: path + type + payload + (optional metadata in v3)
+            auto fe = readEntryCommon(in);
+            if (version >= 3) {
+                readMetadata(in, fe.metadata);
+            }
+            entries.push_back(std::move(fe));
         }
     }
 
@@ -31,60 +45,30 @@ std::vector<FileEntry> ArchiveReader::read(const std::string& archivePath) {
 
 void ArchiveReader::readHeader(std::ifstream& in, uint32_t& entryCount,
                                 uint32_t& version) {
-    // Magic: "DATASW" (6 bytes)
     char magic[6];
     in.read(magic, 6);
     if (std::memcmp(magic, "DATASW", 6) != 0) {
         throw std::runtime_error("Invalid archive format (magic mismatch)");
     }
 
-    // Reserved: 2 bytes
     uint16_t reserved;
     in.read(reinterpret_cast<char*>(&reserved), sizeof(reserved));
 
-    // Version: uint32_t
     in.read(reinterpret_cast<char*>(&version), sizeof(version));
     if (version < 1 || version > ArchiveWriter::ARCHIVE_VERSION) {
         throw std::runtime_error("Unsupported archive version: "
                                  + std::to_string(version));
     }
 
-    // EntryCount: uint32_t
     in.read(reinterpret_cast<char*>(&entryCount), sizeof(entryCount));
 }
 
-FileEntry ArchiveReader::readEntryV1(std::ifstream& in) {
-    // PathLength: uint32_t
+FileEntry ArchiveReader::readEntryCommon(std::ifstream& in) {
     uint32_t pathLen;
     in.read(reinterpret_cast<char*>(&pathLen), sizeof(pathLen));
-
-    // Path
     std::string path(pathLen, '\0');
     in.read(&path[0], pathLen);
 
-    // FileSize: uint64_t
-    uint64_t fileSize;
-    in.read(reinterpret_cast<char*>(&fileSize), sizeof(fileSize));
-
-    // FileContent
-    std::vector<char> data(fileSize);
-    if (fileSize > 0) {
-        in.read(data.data(), fileSize);
-    }
-
-    return FileEntry(std::move(path), fileSize, std::move(data));
-}
-
-FileEntry ArchiveReader::readEntryV2(std::ifstream& in) {
-    // PathLength: uint32_t
-    uint32_t pathLen;
-    in.read(reinterpret_cast<char*>(&pathLen), sizeof(pathLen));
-
-    // Path
-    std::string path(pathLen, '\0');
-    in.read(&path[0], pathLen);
-
-    // FileType: uint8_t
     uint8_t typeVal;
     in.read(reinterpret_cast<char*>(&typeVal), sizeof(typeVal));
     FileType type = static_cast<FileType>(typeVal);
@@ -132,6 +116,23 @@ FileEntry ArchiveReader::readEntryV2(std::ifstream& in) {
         throw std::runtime_error("Unknown file type in archive: "
                                  + std::to_string(typeVal));
     }
+}
+
+void ArchiveReader::readMetadata(std::ifstream& in, FileMetadata& md) {
+    in.read(reinterpret_cast<char*>(&md.createTime), sizeof(md.createTime));
+    in.read(reinterpret_cast<char*>(&md.modTime), sizeof(md.modTime));
+    in.read(reinterpret_cast<char*>(&md.accessTime), sizeof(md.accessTime));
+    in.read(reinterpret_cast<char*>(&md.attributes), sizeof(md.attributes));
+
+    uint16_t ownerLen;
+    in.read(reinterpret_cast<char*>(&ownerLen), sizeof(ownerLen));
+    md.owner.resize(ownerLen);
+    if (ownerLen > 0) in.read(&md.owner[0], ownerLen);
+
+    uint16_t groupLen;
+    in.read(reinterpret_cast<char*>(&groupLen), sizeof(groupLen));
+    md.group.resize(groupLen);
+    if (groupLen > 0) in.read(&md.group[0], groupLen);
 }
 
 } // namespace datasoftware

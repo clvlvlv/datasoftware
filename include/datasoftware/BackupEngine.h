@@ -5,6 +5,7 @@
 #include <vector>
 #include <functional>
 #include "FileEntry.h"
+#include "BackupFilter.h"
 
 namespace datasoftware {
 
@@ -16,6 +17,12 @@ public:
     // Backup an entire directory (preserves relative paths)
     static size_t backup(const std::string& sourceDir,
                          const std::string& archivePath,
+                         ProgressCallback progress = nullptr);
+
+    // Backup directory with custom filter
+    static size_t backup(const std::string& sourceDir,
+                         const std::string& archivePath,
+                         const BackupFilter& filter,
                          ProgressCallback progress = nullptr);
 
     // Backup specific files (stores with filename in archive root)

@@ -48,6 +48,24 @@ void ArchiveWriter::writeEntry(std::ofstream& out, const FileEntry& entry) {
 
     // Type-specific payload
     writeTypePayload(out, entry);
+
+    // Metadata (v3+)
+    writeMetadata(out, entry.metadata);
+}
+
+void ArchiveWriter::writeMetadata(std::ofstream& out, const FileMetadata& md) {
+    out.write(reinterpret_cast<const char*>(&md.createTime), sizeof(md.createTime));
+    out.write(reinterpret_cast<const char*>(&md.modTime), sizeof(md.modTime));
+    out.write(reinterpret_cast<const char*>(&md.accessTime), sizeof(md.accessTime));
+    out.write(reinterpret_cast<const char*>(&md.attributes), sizeof(md.attributes));
+
+    uint16_t ownerLen = static_cast<uint16_t>(md.owner.size());
+    out.write(reinterpret_cast<const char*>(&ownerLen), sizeof(ownerLen));
+    if (ownerLen > 0) out.write(md.owner.data(), ownerLen);
+
+    uint16_t groupLen = static_cast<uint16_t>(md.group.size());
+    out.write(reinterpret_cast<const char*>(&groupLen), sizeof(groupLen));
+    if (groupLen > 0) out.write(md.group.data(), groupLen);
 }
 
 void ArchiveWriter::writeTypePayload(std::ofstream& out, const FileEntry& entry) {

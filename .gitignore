@@ -14,3 +14,20 @@ Thumbs.db
 
 # Test temp
 /tmp/
+
+# Temp test files
+test_comp_main*
+test_original.txt
+*.bak
+check_time.ps1
+
+# Debug test files (not part of the project)
+test/CompDebug*.cpp
+test/MetaDebug.cpp
+test/minimal_test.cpp
+
+# Test artifacts
+test_meta/
+backup_v3.dat
+1.dat
+2/
