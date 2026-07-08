@@ -27,13 +27,33 @@ std::string srcDir;
 std::string restoreDir;
 std::string archivePath;
 
+static void forceRemoveDirectory(const std::string& path) {
+    if (!fs::exists(path)) return;
+    
+    std::error_code ec;
+    for (const auto& entry : fs::recursive_directory_iterator(path, ec)) {
+        if (ec) break;
+        try {
+            fs::permissions(entry.path(),
+                           fs::perms::owner_all | fs::perms::group_all | fs::perms::others_all,
+                           fs::perm_options::replace, ec);
+        } catch (...) {}
+    }
+    
+    fs::remove_all(path, ec);
+}
+
 void setup() {
+    std::string existingTestDir = (fs::temp_directory_path() / "dsbackup_test").string();
+    if (fs::exists(existingTestDir)) {
+        forceRemoveDirectory(existingTestDir);
+    }
+
     testDir = (fs::temp_directory_path() / "dsbackup_test").string();
     srcDir = testDir + "/source";
     restoreDir = testDir + "/restore";
     archivePath = testDir + "/backup.dat";
 
-    fs::remove_all(testDir);
     fs::create_directories(srcDir);
     fs::create_directories(restoreDir);
 }
@@ -103,7 +123,15 @@ void testTraverseNestedFiles() {
         createFile(srcDir + "/sub/b.txt", "bbb");
         createFile(srcDir + "/sub/deep/c.txt", "ccc");
         auto entries = FileTraverser::traverse(srcDir);
-        assert(entries.size() == 3);
+        assert(entries.size() == 5);
+
+        int fileCount = 0, dirCount = 0;
+        for (const auto& e : entries) {
+            if (e.fileType == FileType::Directory) dirCount++;
+            else fileCount++;
+        }
+        assert(fileCount == 3);
+        assert(dirCount == 2);
     END_TEST("Traverse nested directories");
 }
 
@@ -263,16 +291,16 @@ void testBackwardCompatV1() {
             uint32_t count = 2;
             out.write(reinterpret_cast<const char*>(&count), 4);
             // Entry 1
-            uint32_t plen = 8;
+            uint32_t plen = 11;
             out.write(reinterpret_cast<const char*>(&plen), 4);
-            out.write("v1_file.txt", 8);
+            out.write("v1_file.txt", 11);
             uint64_t fsize = 5;
             out.write(reinterpret_cast<const char*>(&fsize), 8);
             out.write("Hello", 5);
             // Entry 2
-            plen = 10;
+            plen = 12;
             out.write(reinterpret_cast<const char*>(&plen), 4);
-            out.write("empty_v1.bin", 10);
+            out.write("empty_v1.bin", 12);
             fsize = 0;
             out.write(reinterpret_cast<const char*>(&fsize), 8);
         }
@@ -343,9 +371,10 @@ void testBackupRestoreSymlink() {
 
 void testRleRoundTrip() {
     TEST("RLE round-trip")
-        std::vector<char> original = {
-            'A', 'A', 'A', 'B', 'B', 'C', 'D', 'D', 'D', 'D'
-        };
+        std::vector<char> original(1000, 'A');
+        for (size_t i = 0; i < 100; ++i) {
+            original[i * 10] = static_cast<char>('A' + (i % 26));
+        }
         auto compressed = Compressor::compress(original, CompressAlgo::RLE);
         auto decompressed = Compressor::decompress(compressed, CompressAlgo::RLE);
         assert(decompressed.size() == original.size());
@@ -376,7 +405,7 @@ void testRleEmpty() {
 
 void testLz77RoundTrip() {
     TEST("LZ77 round-trip")
-        std::string text = "ABABABABABABABABABABABABABABABAB";
+        std::string text = "ABABABABABABABABABABABABABABABABABABABABABABABABAB";
         std::vector<char> original(text.begin(), text.end());
         auto compressed = Compressor::compress(original, CompressAlgo::LZ77);
         auto decompressed = Compressor::decompress(compressed, CompressAlgo::LZ77);
@@ -524,14 +553,16 @@ void testMetadataRoundTrip() {
     TEST("Metadata round-trip (v3 format)")
         std::string testFile = testDir + "/metadata_test.txt";
         std::string archiveFile = testDir + "/meta_archive.dat";
-        std::string restoreFile = testDir + "/restored/meta_test.txt";
+        std::string restoreDirPath = testDir + "/restored";
+        std::string restoreFile = testDir + "/restored/metadata_test.txt";
 
         { std::ofstream out(testFile); out << "hello"; }
 
         // Backup and restore
-        BackupEngine::backup(testDir, archiveFile);
-        fs::remove_all(testDir + "/restored");
-        BackupEngine::restore(archiveFile, testDir + "/restored");
+        size_t count = BackupEngine::backup(testDir, archiveFile);
+        fs::remove_all(restoreDirPath);
+        size_t restored = BackupEngine::restore(archiveFile, restoreDirPath);
+        assert(restored == 1);
 
         // Check file exists and content is correct
         assert(fs::exists(restoreFile));
@@ -637,123 +668,591 @@ void testBackupFilesMetadata() {
     END_TEST("backupFiles metadata preservation");
 }
 
+void testFilterIncludePaths() {
+    TEST("Filter: include paths")
+        BackupFilter f;
+        f.includePaths = {"docs/**", "src/*.cpp"};
+        
+        assert(f.matches("docs/readme.txt", ".txt", 100, 0, ""));
+        assert(f.matches("src/main.cpp", ".cpp", 100, 0, ""));
+        assert(!f.matches("tmp/temp.log", ".log", 100, 0, ""));
+        assert(!f.matches("src/main.h", ".h", 100, 0, ""));
+    END_TEST("Filter: include paths");
+}
+
+void testFilterExcludePaths() {
+    TEST("Filter: exclude paths")
+        BackupFilter f;
+        f.excludePaths = {"tmp/**", "*.log", ".git/**"};
+        
+        assert(!f.matches("tmp/cache.dat", ".dat", 100, 0, ""));
+        assert(!f.matches("debug.log", ".log", 100, 0, ""));
+        assert(!f.matches(".git/config", ".config", 100, 0, ""));
+        assert(f.matches("src/main.cpp", ".cpp", 100, 0, ""));
+    END_TEST("Filter: exclude paths");
+}
+
+void testFilterIncludeExtensions() {
+    TEST("Filter: include extensions")
+        BackupFilter f;
+        f.includeExts = {".txt", ".pdf", ".docx"};
+        
+        assert(f.matches("doc.txt", ".txt", 100, 0, ""));
+        assert(f.matches("report.pdf", ".pdf", 100, 0, ""));
+        assert(f.matches("letter.docx", ".docx", 100, 0, ""));
+        assert(!f.matches("image.png", ".png", 100, 0, ""));
+        assert(!f.matches("script.js", ".js", 100, 0, ""));
+    END_TEST("Filter: include extensions");
+}
+
+void testFilterExcludeExtensions() {
+    TEST("Filter: exclude extensions")
+        BackupFilter f;
+        f.excludeExts = {".tmp", ".bak", ".log"};
+        
+        assert(!f.matches("temp.tmp", ".tmp", 100, 0, ""));
+        assert(!f.matches("backup.bak", ".bak", 100, 0, ""));
+        assert(!f.matches("system.log", ".log", 100, 0, ""));
+        assert(f.matches("document.txt", ".txt", 100, 0, ""));
+        assert(f.matches("image.png", ".png", 100, 0, ""));
+    END_TEST("Filter: exclude extensions");
+}
+
+void testFilterNamePattern() {
+    TEST("Filter: name pattern (substring)")
+        BackupFilter f;
+        f.namePattern = "test";
+        
+        assert(f.matches("test_file.txt", ".txt", 100, 0, ""));
+        assert(f.matches("my_test_data.csv", ".csv", 100, 0, ""));
+        assert(f.matches("TESTCASE.cpp", ".cpp", 100, 0, "")); // 不区分大小写
+        assert(!f.matches("production.dat", ".dat", 100, 0, ""));
+    END_TEST("Filter: name pattern");
+}
+
+void testFilterSizeRange() {
+    TEST("Filter: size range")
+        BackupFilter f;
+        f.minSize = 100;
+        f.maxSize = 1000;
+        
+        assert(f.matches("file.txt", ".txt", 500, 0, ""));
+        assert(f.matches("file.txt", ".txt", 100, 0, ""));
+        assert(f.matches("file.txt", ".txt", 1000, 0, ""));
+        assert(!f.matches("small.txt", ".txt", 99, 0, ""));
+        assert(!f.matches("large.txt", ".txt", 1001, 0, ""));
+    END_TEST("Filter: size range");
+}
+
+void testFilterTimeRange() {
+    TEST("Filter: time range")
+        BackupFilter f;
+        f.timeFrom = 1000;
+        f.timeTo = 2000;
+        
+        assert(f.matches("file.txt", ".txt", 100, 1000, ""));
+        assert(f.matches("file.txt", ".txt", 100, 1500, ""));
+        assert(f.matches("file.txt", ".txt", 100, 2000, ""));
+        assert(!f.matches("file.txt", ".txt", 100, 999, ""));
+        assert(!f.matches("file.txt", ".txt", 100, 2001, ""));
+    END_TEST("Filter: time range");
+}
+
+void testFilterUserName() {
+    TEST("Filter: user name")
+        BackupFilter f;
+        f.userName = "admin";
+        
+        assert(f.matches("file.txt", ".txt", 100, 0, "admin"));
+        assert(f.matches("file.txt", ".txt", 100, 0, "Administrator")); // 不区分大小写
+        assert(!f.matches("file.txt", ".txt", 100, 0, "guest"));
+    END_TEST("Filter: user name");
+}
+
+void testFilterCombined() {
+    TEST("Filter: combined filters")
+        BackupFilter f;
+        f.includeExts = {".txt", ".cpp"};
+        f.excludePaths = {"tmp/**"};
+        f.namePattern = "src";
+        f.minSize = 10;
+        f.maxSize = 1000;
+        
+        // 应该匹配
+        assert(f.matches("src/main.cpp", ".cpp", 500, 0, ""));
+        assert(f.matches("src/test.txt", ".txt", 50, 0, ""));
+        
+        // 不应该匹配
+        assert(!f.matches("tmp/src/main.cpp", ".cpp", 500, 0, "")); // excludePath
+        assert(!f.matches("src/main.h", ".h", 500, 0, "")); // 扩展名不匹配
+        assert(!f.matches("src/small.txt", ".txt", 5, 0, "")); // 太小
+        assert(!f.matches("src/large.txt", ".txt", 2000, 0, "")); // 太大
+    END_TEST("Filter: combined filters");
+}
+
+void testFilterSummary() {
+    TEST("Filter: summary output")
+        BackupFilter f;
+        f.includeExts = {".txt", ".pdf"};
+        f.excludePaths = {"tmp/**"};
+        f.namePattern = "data";
+        f.minSize = 100;
+        
+        std::string summary = f.summary();
+        assert(summary.find("ext in") != std::string::npos);
+        assert(summary.find("path out") != std::string::npos);
+        assert(summary.find("name") != std::string::npos);
+        assert(summary.find("min size") != std::string::npos);
+        
+        // 清除后应该显示 "no filters"
+        f.clear();
+        assert(f.summary() == "no filters");
+        assert(!f.isActive());
+    END_TEST("Filter: summary output");
+}
+
+void testLargeFile() {
+    TEST("Large file handling (10MB)")
+        std::string largeFile = srcDir + "/large.bin";
+        std::vector<char> data(10 * 1024 * 1024, 'X');
+        for (size_t i = 0; i < data.size(); i += 1024) {
+            data[i] = static_cast<char>(i % 256);
+        }
+        
+        {
+            std::ofstream out(largeFile, std::ios::binary);
+            out.write(data.data(), data.size());
+        }
+        
+        auto entries = FileTraverser::traverse(srcDir);
+        assert(entries.size() == 1);
+        assert(entries[0].fileSize == data.size());
+        assert(std::memcmp(entries[0].data.data(), data.data(), data.size()) == 0);
+        
+        BackupEngine::backup(srcDir, archivePath);
+        BackupEngine::restore(archivePath, restoreDir);
+        
+        std::string restoredFile = restoreDir + "/large.bin";
+        assert(fs::exists(restoredFile));
+        assert(fs::file_size(restoredFile) == data.size());
+        
+        std::ifstream in(restoredFile, std::ios::binary);
+        std::vector<char> restored(data.size());
+        in.read(restored.data(), data.size());
+        assert(std::memcmp(restored.data(), data.data(), data.size()) == 0);
+    END_TEST("Large file handling (10MB)");
+}
+
+void testSpecialCharactersInPath() {
+    TEST("Special characters in path")
+        std::vector<std::string> testNames = {
+            "file with spaces.txt",
+            "file-with-dashes.txt",
+            "file_with_underscores.txt",
+            "file.with.dots.txt",
+            "文件中文.txt",  // Unicode
+            "file (with) brackets.txt",
+            "file's apostrophe.txt"
+        };
+        
+        for (const auto& name : testNames) {
+            createFile(srcDir + "/" + name, "content");
+        }
+        
+        auto entries = FileTraverser::traverse(srcDir);
+        assert(entries.size() == testNames.size());
+        
+        for (const auto& entry : entries) {
+            assert(entry.fileSize == 7); // "content" length
+        }
+    END_TEST("Special characters in path");
+}
+
+void testDeepNesting() {
+    TEST("Deep directory nesting (20 levels)")
+        std::string path = srcDir;
+        for (int i = 0; i < 20; ++i) {
+            path += "/level" + std::to_string(i);
+        }
+        createFile(path + "/deep.txt", "deep content");
+        
+        auto entries = FileTraverser::traverse(srcDir);
+        // 20 directories + 1 file = 21 entries
+        assert(entries.size() == 21);
+        
+        bool found = false;
+        for (const auto& e : entries) {
+            if (e.fileType == FileType::Regular && e.relativePath.find("deep.txt") != std::string::npos) {
+                found = true;
+                assert(std::string(e.data.data(), 12) == "deep content");
+            }
+        }
+        assert(found);
+    END_TEST("Deep directory nesting (20 levels)");
+}
+
+void testManyFiles() {
+    TEST("Many files (500 files)")
+        const int NUM_FILES = 500;
+        for (int i = 0; i < NUM_FILES; ++i) {
+            createFile(srcDir + "/file" + std::to_string(i) + ".txt", 
+                      "Content " + std::to_string(i));
+        }
+        
+        auto entries = FileTraverser::traverse(srcDir);
+        assert(entries.size() == NUM_FILES);
+        
+        size_t backedUp = BackupEngine::backup(srcDir, archivePath);
+        assert(backedUp == NUM_FILES);
+    END_TEST("Many files (500 files)");
+}
+
+void testNonExistentSource() {
+    TEST("Error handling: non-existent source directory")
+        bool caught = false;
+        try {
+            FileTraverser::traverse(testDir + "/nonexistent");
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    END_TEST("Error handling: non-existent source directory");
+}
+
+void testNonExistentArchive() {
+    TEST("Error handling: non-existent archive")
+        bool caught = false;
+        try {
+            ArchiveReader::read(testDir + "/nonexistent.dat");
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    END_TEST("Error handling: non-existent archive");
+}
+
+void testCorruptedArchive() {
+    TEST("Error handling: corrupted archive")
+        {
+            std::ofstream out(archivePath, std::ios::binary);
+            out << "CORRUPTED" << std::string(100, 'X');
+        }
+        
+        bool caught = false;
+        try {
+            ArchiveReader::read(archivePath);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    END_TEST("Error handling: corrupted archive");
+}
+
+void testEmptyPassword() {
+    TEST("Error handling: empty password")
+        std::vector<char> data = {'t', 'e', 's', 't'};
+        bool caught = false;
+        try {
+            Crypto::encrypt(data, "");
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    END_TEST("Error handling: empty password");
+}
+
+void testBackupFilesSimple() {
+    TEST("BackupFiles: simple list of files")
+        createFile(srcDir + "/a.txt", "aaa");
+        createFile(srcDir + "/b.txt", "bbb");
+        createFile(srcDir + "/c.txt", "ccc");
+        
+        std::vector<std::string> files = {
+            srcDir + "/a.txt",
+            srcDir + "/b.txt",
+            srcDir + "/c.txt"
+        };
+        
+        size_t count = BackupEngine::backupFiles(files, archivePath);
+        assert(count == 3);
+        
+        fs::remove_all(restoreDir);
+        BackupEngine::restore(archivePath, restoreDir);
+        
+        assert(fileContentEquals(restoreDir + "/a.txt", "aaa"));
+        assert(fileContentEquals(restoreDir + "/b.txt", "bbb"));
+        assert(fileContentEquals(restoreDir + "/c.txt", "ccc"));
+    END_TEST("BackupFiles: simple list of files");
+}
+
+void testBackupFilesWithSubdirs() {
+    TEST("BackupFiles: files from subdirectories")
+        createFile(srcDir + "/sub1/a.txt", "aaa");
+        createFile(srcDir + "/sub2/b.txt", "bbb");
+        createFile(srcDir + "/sub2/sub3/c.txt", "ccc");
+        
+        std::vector<std::string> files = {
+            srcDir + "/sub1/a.txt",
+            srcDir + "/sub2/b.txt",
+            srcDir + "/sub2/sub3/c.txt"
+        };
+        
+        size_t count = BackupEngine::backupFiles(files, archivePath);
+        assert(count == 3);
+        
+        fs::remove_all(restoreDir);
+        BackupEngine::restore(archivePath, restoreDir);
+        
+        assert(fileContentEquals(restoreDir + "/a.txt", "aaa"));
+        assert(fileContentEquals(restoreDir + "/b.txt", "bbb"));
+        assert(fileContentEquals(restoreDir + "/c.txt", "ccc"));
+    END_TEST("BackupFiles: files from subdirectories");
+}
+
+void testEncryptedBackup() {
+    TEST("Encrypted backup and restore")
+        createFile(srcDir + "/secret.txt", "This is secret data");
+        createFile(srcDir + "/public.txt", "This is public data");
+        
+        // 先正常备份
+        BackupEngine::backup(srcDir, archivePath);
+        
+        // 加密归档
+        std::string password = "secure123";
+        std::string encryptedPath = testDir + "/encrypted.dat";
+        Crypto::encryptFile(archivePath, encryptedPath, password);
+        
+        // 尝试恢复（应该检测到加密并提示）
+        bool requiresPassword = Crypto::isEncryptedFile(encryptedPath);
+        assert(requiresPassword);
+        
+        // 用正确密码解密后恢复
+        std::string tempDecrypted = testDir + "/decrypted.dat";
+        Crypto::decryptFile(encryptedPath, tempDecrypted, password);
+        
+        fs::remove_all(restoreDir);
+        BackupEngine::restore(tempDecrypted, restoreDir);
+        
+        assert(fileContentEquals(restoreDir + "/secret.txt", "This is secret data"));
+        assert(fileContentEquals(restoreDir + "/public.txt", "This is public data"));
+        
+        // 清理临时文件
+        fs::remove(tempDecrypted);
+    END_TEST("Encrypted backup and restore");
+}
+
+void testEncryptedBackupWrongPassword() {
+    TEST("Encrypted backup: wrong password rejected")
+        createFile(srcDir + "/data.txt", "sensitive data");
+        BackupEngine::backup(srcDir, archivePath);
+        
+        std::string password = "correct";
+        std::string encryptedPath = testDir + "/encrypted.dat";
+        Crypto::encryptFile(archivePath, encryptedPath, password);
+        
+        // 尝试用错误密码解密
+        bool caught = false;
+        try {
+            Crypto::decryptFile(encryptedPath, testDir + "/decrypted.dat", "wrong");
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    END_TEST("Encrypted backup: wrong password rejected");
+}
+
+void testProgressCallback() {
+    TEST("Progress callback invocation")
+        createFile(srcDir + "/a.txt", "aaa");
+        createFile(srcDir + "/b.txt", "bbb");
+        createFile(srcDir + "/c.txt", "ccc");
+        
+        size_t lastProgress = 0;
+        size_t totalProgress = 0;
+        bool callbackCalled = false;
+        
+        auto cb = [&](size_t cur, size_t tot, const std::string& msg) {
+            callbackCalled = true;
+            lastProgress = cur;
+            totalProgress = tot;
+        };
+        
+        BackupEngine::backup(srcDir, archivePath, cb);
+        
+        assert(callbackCalled);
+        assert(totalProgress == 3);
+        // 最后进度应该是 total
+        assert(lastProgress == 3);
+    END_TEST("Progress callback invocation");
+}
+
+void testProgressCallbackRestore() {
+    TEST("Progress callback on restore")
+        createFile(srcDir + "/a.txt", "aaa");
+        createFile(srcDir + "/b.txt", "bbb");
+        BackupEngine::backup(srcDir, archivePath);
+        
+        size_t lastProgress = 0;
+        bool callbackCalled = false;
+        
+        auto cb = [&](size_t cur, size_t tot, const std::string& msg) {
+            callbackCalled = true;
+            lastProgress = cur;
+        };
+        
+        BackupEngine::restore(archivePath, restoreDir, cb);
+        
+        assert(callbackCalled);
+        assert(lastProgress == 2);
+    END_TEST("Progress callback on restore");
+}
+
+void testEmptyMetadata() {
+    TEST("Empty metadata handling")
+        FileEntry fe("test.txt", 0, std::vector<char>{});
+        assert(fe.metadata.isEmpty());
+        
+        // 备份和恢复应该能处理空元数据
+        BackupEngine::backup(srcDir, archivePath);
+        BackupEngine::restore(archivePath, restoreDir);
+        
+        // 应该正常完成，不崩溃
+    END_TEST("Empty metadata handling");
+}
+
+void testMetadataAttributes() {
+    TEST("File attributes preservation")
+        createFile(srcDir + "/attrs.txt", "content");
+        
+        std::string fullPath = srcDir + "/attrs.txt";
+        
+        // 设置只读属性
+        std::wstring wpath(fullPath.begin(), fullPath.end());
+        SetFileAttributesW(wpath.c_str(), FILE_ATTRIBUTE_READONLY);
+        
+        // 备份
+        BackupEngine::backup(srcDir, archivePath);
+        
+        // 恢复
+        fs::remove_all(restoreDir);
+        BackupEngine::restore(archivePath, restoreDir);
+        
+        std::string restoredPath = restoreDir + "/attrs.txt";
+        
+        // 检查属性是否保留
+        WIN32_FILE_ATTRIBUTE_DATA info;
+        std::wstring rpath(restoredPath.begin(), restoredPath.end());
+        if (GetFileAttributesExW(rpath.c_str(), GetFileExInfoStandard, &info)) {
+            assert(info.dwFileAttributes & FILE_ATTRIBUTE_READONLY);
+        }
+        
+        // 清理
+        SetFileAttributesW(wpath.c_str(), FILE_ATTRIBUTE_NORMAL);
+        SetFileAttributesW(rpath.c_str(), FILE_ATTRIBUTE_NORMAL);
+    END_TEST("File attributes preservation");
+}
+
 // === Main ===
 
+// 替换原有的 main 函数
 int main() {
-    std::cout << "=== Data Backup Software - Basic Function Tests ===" << std::endl;
+    std::cout << "=== Data Backup Software - Complete Test Suite ===" << std::endl;
     std::cout << std::endl;
 
-    // Clean up any leftover test directory
-    std::error_code ec;
-    fs::remove_all(fs::temp_directory_path() / "dsbackup_test", ec);
-    setup();
-    testTraverseEmptyDir();
+    // ===== 基础功能测试 =====
+    std::cout << "--- Basic Functionality ---" << std::endl;
+    setup(); testTraverseEmptyDir();
+    setup(); testTraverseSingleFile();
+    setup(); testTraverseNestedFiles();  // 已修复
+    setup(); testArchiveRoundTrip();
+    setup(); testBackupAndRestore();
+    setup(); testEmptyDirBackup();
+    setup(); testInvalidArchive();
 
-    setup();
-    testTraverseSingleFile();
+    // ===== 文件类型测试 =====
+    std::cout << std::endl << "--- File Type Support ---" << std::endl;
+    setup(); testTraverseIncludesDirectories();
+    setup(); testSymlinkRoundTrip();
+    setup(); testFifoRoundTrip();
+    setup(); testDeviceRoundTrip();
+    setup(); testHardLinkRoundTrip();
+    setup(); testBackwardCompatV1();
+    setup(); testBackupRestoreSymlink();
 
-    setup();
-    testTraverseNestedFiles();
+    // ===== 过滤器测试 =====
+    std::cout << std::endl << "--- BackupFilter Tests ---" << std::endl;
+    testFilterIncludePaths();
+    testFilterExcludePaths();
+    testFilterIncludeExtensions();
+    testFilterExcludeExtensions();
+    testFilterNamePattern();
+    testFilterSizeRange();
+    testFilterTimeRange();
+    testFilterUserName();
+    testFilterCombined();
+    testFilterSummary();
 
-    setup();
-    testArchiveRoundTrip();
+    // ===== 压缩测试 =====
+    std::cout << std::endl << "--- Compression ---" << std::endl;
+    setup(); testRleRoundTrip();
+    setup(); testRleNoRepeat();
+    setup(); testRleEmpty();
+    setup(); testLz77RoundTrip();
+    setup(); testLz77General();
+    setup(); testCompressFileRoundTrip();
+    setup(); testHuffmanRoundTrip();
+    setup(); testHuffmanAllBytes();
+    setup(); testHuffmanEmpty();
+    setup(); testHuffmanLargeData();
 
-    setup();
-    testBackupAndRestore();
+    // ===== 加密测试 =====
+    std::cout << std::endl << "--- Encryption ---" << std::endl;
+    setup(); testCryptoRoundTrip();
+    setup(); testCryptoWrongPassword();
+    setup(); testCryptoLarge();
 
-    setup();
-    testEmptyDirBackup();
+    // ===== 元数据测试 =====
+    std::cout << std::endl << "--- Metadata ---" << std::endl;
+    setup(); testMetadataRoundTrip();
+    setup(); testMetadataTimestamp();
+    setup(); testBackupFilesMetadata();
+    setup(); testEmptyMetadata();
+    setup(); testMetadataAttributes();
 
-    setup();
-    testInvalidArchive();
+    // ===== 边界条件测试 =====
+    std::cout << std::endl << "--- Edge Cases ---" << std::endl;
+    setup(); testLargeFile();
+    setup(); testSpecialCharactersInPath();
+    setup(); testDeepNesting();
+    setup(); testManyFiles();
 
-    // File type support tests
+    // ===== 错误处理测试 =====
+    std::cout << std::endl << "--- Error Handling ---" << std::endl;
+    setup(); testNonExistentSource();
+    setup(); testNonExistentArchive();
+    setup(); testCorruptedArchive();
+    setup(); testEmptyPassword();
+
+    // ===== BackupFiles测试 =====
+    std::cout << std::endl << "--- BackupFiles ---" << std::endl;
+    setup(); testBackupFilesSimple();
+    setup(); testBackupFilesWithSubdirs();
+
+    // ===== 加密备份集成测试 =====
+    std::cout << std::endl << "--- Encrypted Backup ---" << std::endl;
+    setup(); testEncryptedBackup();
+    setup(); testEncryptedBackupWrongPassword();
+
+    // ===== 进度回调测试 =====
+    std::cout << std::endl << "--- Progress Callback ---" << std::endl;
+    setup(); testProgressCallback();
+    setup(); testProgressCallbackRestore();
+
+    // ===== 结果汇总 =====
     std::cout << std::endl;
-    std::cout << "--- File Type Support ---" << std::endl;
-
-    setup();
-    testTraverseIncludesDirectories();
-
-    setup();
-    testSymlinkRoundTrip();
-
-    setup();
-    testFifoRoundTrip();
-
-    setup();
-    testDeviceRoundTrip();
-
-    setup();
-    testHardLinkRoundTrip();
-
-    setup();
-    testBackwardCompatV1();
-
-    setup();
-    testBackupRestoreSymlink();
-
-    // Compression tests
-    std::cout << std::endl;
-    std::cout << "--- Compression ---" << std::endl;
-
-    setup();
-    testRleRoundTrip();
-
-    setup();
-    testRleNoRepeat();
-
-    setup();
-    testRleEmpty();
-
-    setup();
-    testLz77RoundTrip();
-
-    setup();
-    testLz77General();
-
-    setup();
-    testCompressFileRoundTrip();
-
-    setup();
-    testHuffmanRoundTrip();
-
-    setup();
-    testHuffmanAllBytes();
-
-    setup();
-    testHuffmanEmpty();
-
-    setup();
-    testHuffmanLargeData();
-
-    // Crypto tests
-    std::cout << std::endl;
-    std::cout << "--- Encryption ---" << std::endl;
-
-    setup();
-    testCryptoRoundTrip();
-
-    setup();
-    testCryptoWrongPassword();
-
-    setup();
-    testCryptoLarge();
-
-    // Metadata tests
-    std::cout << std::endl;
-    std::cout << "--- Metadata ---" << std::endl;
-
-    setup();
-    testMetadataRoundTrip();
-
-    setup();
-    testMetadataTimestamp();
-
-    setup();
-    testBackupFilesMetadata();
-
-    std::cout << std::endl;
+    std::cout << "========================================" << std::endl;
     std::cout << "=== Results: " << passed << " passed, " << failed << " failed ===" << std::endl;
+    std::cout << "========================================" << std::endl;
 
     return failed > 0 ? 1 : 0;
 }

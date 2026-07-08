@@ -9,9 +9,26 @@
 #include <bcrypt.h>
 #pragma comment(lib, "bcrypt.lib")
 
+
+
 namespace datasoftware {
 
 // ---- helpers ----
+
+static NTSTATUS bcryptHash(BCRYPT_ALG_HANDLE hAlgo,
+                           PUCHAR secret, ULONG secretLen,
+                           PUCHAR input, ULONG inputLen,
+                           PUCHAR output, ULONG outputLen) {
+    BCRYPT_HASH_HANDLE hHash = nullptr;
+    NTSTATUS status = BCryptCreateHash(hAlgo, &hHash, nullptr, 0,
+                                       secret, secretLen, 0);
+    if (status < 0) return status;
+    status = BCryptHashData(hHash, input, inputLen, 0);
+    if (status < 0) { BCryptDestroyHash(hHash); return status; }
+    status = BCryptFinishHash(hHash, output, outputLen, 0);
+    BCryptDestroyHash(hHash);
+    return status;
+}
 
 static void checkBCrypt(NTSTATUS status, const char* msg) {
     if (status < 0) {
@@ -40,7 +57,7 @@ static std::vector<char> deriveKey(const std::string& password,
 
     uint8_t hash[32];
     ULONG resultLen = 0;
-    checkBCrypt(BCryptHash(hAlgo, nullptr, 0,
+    checkBCrypt(bcryptHash(hAlgo, nullptr, 0,
                            input.data(), static_cast<ULONG>(inLen),
                            hash, sizeof(hash)),
                 "Hash");
@@ -59,7 +76,7 @@ static std::vector<char> hmacSha256(const std::vector<char>& key,
                 "Open HMAC-SHA256");
 
     uint8_t hash[32];
-    checkBCrypt(BCryptHash(hAlgo,
+    checkBCrypt(bcryptHash(hAlgo,
                 reinterpret_cast<PUCHAR>(const_cast<char*>(key.data())),
                 static_cast<ULONG>(key.size()),
                 reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),

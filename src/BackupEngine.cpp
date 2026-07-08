@@ -20,18 +20,25 @@ size_t BackupEngine::backup(const std::string& sourceDir,
     return backup(sourceDir, archivePath, BackupFilter{}, progress);
 }
 
-size_t BackupEngine::backup(const std::string& sourceDir,
+    size_t BackupEngine::backup(const std::string& sourceDir,
                             const std::string& archivePath,
                             const BackupFilter& filter,
                             ProgressCallback progress) {
     if (progress) progress(0, 1, "Scanning directory...");
     std::vector<FileEntry> entries = FileTraverser::traverse(sourceDir, progress, filter);
 
-    if (progress) progress(0, entries.size(), "Writing archive...");
+    size_t fileCount = 0;
+    for (const auto& entry : entries) {
+        if (entry.fileType != FileType::Directory) {
+            fileCount++;
+        }
+    }
+
+    if (progress) progress(0, fileCount, "Writing archive...");
     ArchiveWriter::write(archivePath, entries);
 
-    if (progress) progress(entries.size(), entries.size(), "Backup complete!");
-    return entries.size();
+    if (progress) progress(fileCount, fileCount, "Backup complete!");
+    return fileCount;
 }
 
 size_t BackupEngine::backupFiles(const std::vector<std::string>& filePaths,
@@ -122,26 +129,37 @@ size_t BackupEngine::restore(const std::string& archivePath,
                              const std::string& restoreDir,
                              ProgressCallback progress) {
     std::vector<FileEntry> entries = ArchiveReader::read(archivePath);
-    size_t total = entries.size();
+    
+    size_t total = 0;
+    for (const auto& entry : entries) {
+        if (entry.fileType != FileType::Directory) {
+            total++;
+        }
+    }
 
     if (progress) progress(0, total, "Restoring files...");
 
     fs::path restorePath(restoreDir);
     fs::create_directories(restorePath);
 
-    for (size_t i = 0; i < total; ++i) {
-        const auto& entry = entries[i];
-        if (progress) progress(i, total, entry.relativePath);
+    size_t restoredCount = 0;
+    for (const auto& entry : entries) {
+        if (entry.fileType == FileType::Directory) {
+            fs::path filePath = restorePath / entry.relativePath;
+            fs::create_directories(filePath);
+            continue;
+        }
+
+        if (progress) progress(restoredCount, total, entry.relativePath);
 
         fs::path filePath = restorePath / entry.relativePath;
+        fs::create_directories(filePath.parent_path());
 
         switch (entry.fileType) {
         case FileType::Regular: {
-            fs::create_directories(filePath.parent_path());
             std::ofstream out(filePath, std::ios::binary);
             if (!out.is_open()) {
-                throw std::runtime_error("Cannot create file: "
-                                         + filePath.string());
+                throw std::runtime_error("Cannot create file: " + filePath.string());
             }
             if (entry.fileSize > 0) {
                 out.write(entry.data.data(), entry.fileSize);
@@ -149,23 +167,16 @@ size_t BackupEngine::restore(const std::string& archivePath,
             out.close();
             break;
         }
-        case FileType::Directory: {
-            fs::create_directories(filePath);
-            break;
-        }
         case FileType::Symlink: {
-            fs::create_directories(filePath.parent_path());
             std::error_code ec;
             fs::remove(filePath, ec);
             fs::create_symlink(entry.symlinkTarget, filePath, ec);
             break;
         }
         case FileType::HardLink: {
-            fs::create_directories(filePath.parent_path());
             std::ofstream out(filePath, std::ios::binary);
             if (!out.is_open()) {
-                throw std::runtime_error("Cannot create file: "
-                                         + filePath.string());
+                throw std::runtime_error("Cannot create file: " + filePath.string());
             }
             if (entry.fileSize > 0) {
                 out.write(entry.data.data(), entry.fileSize);
@@ -174,7 +185,6 @@ size_t BackupEngine::restore(const std::string& archivePath,
             break;
         }
         case FileType::Fifo: {
-            fs::create_directories(filePath.parent_path());
             std::error_code ec;
             fs::remove(filePath, ec);
             #ifdef _WIN32
@@ -186,7 +196,6 @@ size_t BackupEngine::restore(const std::string& archivePath,
             break;
         }
         case FileType::Device: {
-            fs::create_directories(filePath.parent_path());
             #ifndef _WIN32
             std::error_code ec;
             dev_t dev = makedev(entry.deviceMajor, entry.deviceMinor);
@@ -195,14 +204,17 @@ size_t BackupEngine::restore(const std::string& archivePath,
             #endif
             break;
         }
+        default:
+            break;
         }
 
         // Restore metadata after writing the file
         restoreFileMetadata(filePath, entry.metadata);
+        restoredCount++;
     }
 
     if (progress) progress(total, total, "Restore complete!");
-    return total;
+    return restoredCount;
 }
 
 } // namespace datasoftware
