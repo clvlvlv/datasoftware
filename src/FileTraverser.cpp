@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cctype>
 #include <ctime>
+#include <unordered_set>
+#include <algorithm>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -76,16 +78,28 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
 
     auto opts = fs::directory_options::skip_permission_denied;
     std::unordered_map<std::string, size_t> seen;
+    std::unordered_set<std::string> addedDirs;
     std::vector<FileEntry> entries;
     size_t processed = 0;
 
     for (const auto& entry : fs::recursive_directory_iterator(base, opts)) {
         fs::path relative = fs::relative(entry.path(), base);
         std::string relStr = relative.string();
+        std::replace(relStr.begin(), relStr.end(), '\\', '/');
         auto status = entry.symlink_status();
 
         FileEntry fe;
 
+        if (fs::is_directory(status)) {
+            if (addedDirs.find(relStr) == addedDirs.end()) {
+                FileEntry dirEntry(relStr, FileType::Directory, 0, std::vector<char>{});
+                seen[relStr] = entries.size();
+                entries.push_back(std::move(dirEntry));
+                addedDirs.insert(relStr);
+            }
+            continue;
+        }
+        
         if (fs::is_symlink(status)) {
             std::error_code ec;
             fs::path target = fs::read_symlink(entry.path(), ec);
@@ -93,11 +107,8 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
                            std::vector<char>{},
                            ec ? "" : target.string());
         }
-        else if (fs::is_directory(status)) {
-            fe = FileEntry(relStr, FileType::Directory, 0, std::vector<char>{});
-        }
         else if (fs::is_regular_file(status)) {
-            // Apply filter before reading
+            // 应用过滤器
             if (filter.isActive()) {
                 std::string ext;
                 auto dot = relStr.rfind('.');
@@ -118,11 +129,8 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
                     #endif
                 } catch (...) { mtime = 0; }
 
-                // On Windows, use GetFileInformationByHandle for metadata
                 auto md = readFileMetadata(entry.path());
-
                 std::string owner = md.owner;
-
                 uint64_t fsize = 0;
                 try { fsize = fs::file_size(entry.path()); } catch (...) {}
 
@@ -146,6 +154,19 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
         }
         else {
             continue;
+        }
+
+        fs::path parent = relative.parent_path();
+        while (!parent.empty()) {
+            std::string parentStr = parent.string();
+            std::replace(parentStr.begin(), parentStr.end(), '\\', '/');
+            if (addedDirs.find(parentStr) == addedDirs.end()) {
+                FileEntry dirEntry(parentStr, FileType::Directory, 0, std::vector<char>{});
+                seen[parentStr] = entries.size();
+                entries.push_back(std::move(dirEntry));
+                addedDirs.insert(parentStr);
+            }
+            parent = parent.parent_path();
         }
 
         // Dedup
