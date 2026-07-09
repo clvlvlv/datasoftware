@@ -1,6 +1,9 @@
 #include "datasoftware/ArchiveWriter.h"
 #include <cstring>
 #include <stdexcept>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 namespace datasoftware {
 
@@ -23,6 +26,60 @@ void ArchiveWriter::write(const std::string& archivePath,
     }
 }
 
+void ArchiveWriter::writeEntryStream(std::ofstream& out,
+                                      const std::string& sourcePath,
+                                      const std::string& archiveRelativePath,
+                                      const FileMetadata& metadata) {
+    fs::path srcPath(sourcePath);
+    uint64_t fileSize = fs::file_size(srcPath);
+
+    // Entry header
+    uint32_t pathLen = static_cast<uint32_t>(archiveRelativePath.size());
+    out.write(reinterpret_cast<const char*>(&pathLen), sizeof(pathLen));
+    out.write(archiveRelativePath.data(), pathLen);
+
+    uint8_t type = static_cast<uint8_t>(FileType::Regular);
+    out.write(reinterpret_cast<const char*>(&type), sizeof(type));
+
+    out.write(reinterpret_cast<const char*>(&fileSize), sizeof(fileSize));
+
+    // Stream file content in chunks
+    std::ifstream src(srcPath, std::ios::binary);
+    if (!src.is_open()) {
+        throw std::runtime_error("Cannot open source file: " + sourcePath);
+    }
+
+    char buffer[STREAM_CHUNK];
+    uint64_t remaining = fileSize;
+    while (remaining > 0) {
+        size_t toRead = std::min<size_t>(remaining, STREAM_CHUNK);
+        src.read(buffer, static_cast<std::streamsize>(toRead));
+        size_t read = static_cast<size_t>(src.gcount());
+        if (read > 0) {
+            out.write(buffer, static_cast<std::streamsize>(read));
+            remaining -= read;
+        } else {
+            break;
+        }
+    }
+    src.close();
+
+    // Metadata
+    writeMetadata(out, metadata);
+}
+
+void ArchiveWriter::writeFile(const std::string& archivePath,
+                               const std::string& sourcePath,
+                               const std::string& archiveRelativePath,
+                               const FileMetadata& metadata) {
+    std::ofstream out(archivePath, std::ios::binary | std::ios::app);
+    if (!out.is_open()) {
+        throw std::runtime_error("Cannot open archive: " + archivePath);
+    }
+    writeEntryStream(out, sourcePath, archiveRelativePath, metadata);
+    out.close();
+}
+
 void ArchiveWriter::writeHeader(std::ofstream& out, uint32_t entryCount) {
     const char magic[] = "DATASW";
     out.write(magic, 6);
@@ -37,19 +94,15 @@ void ArchiveWriter::writeHeader(std::ofstream& out, uint32_t entryCount) {
 }
 
 void ArchiveWriter::writeEntry(std::ofstream& out, const FileEntry& entry) {
-    // PathLength + Path
     uint32_t pathLen = static_cast<uint32_t>(entry.relativePath.size());
     out.write(reinterpret_cast<const char*>(&pathLen), sizeof(pathLen));
     out.write(entry.relativePath.data(), pathLen);
 
-    // FileType
     uint8_t type = static_cast<uint8_t>(entry.fileType);
     out.write(reinterpret_cast<const char*>(&type), sizeof(type));
 
-    // Type-specific payload
     writeTypePayload(out, entry);
 
-    // Metadata (v3+)
     writeMetadata(out, entry.metadata);
 }
 
@@ -72,13 +125,11 @@ void ArchiveWriter::writeTypePayload(std::ofstream& out, const FileEntry& entry)
     switch (entry.fileType) {
     case FileType::Regular:
     case FileType::HardLink: {
-        // FileSize + FileContent
         uint64_t size = entry.fileSize;
         out.write(reinterpret_cast<const char*>(&size), sizeof(size));
         if (size > 0) {
             out.write(entry.data.data(), size);
         }
-        // Hard link ID (extra for HardLink)
         if (entry.fileType == FileType::HardLink) {
             uint64_t hId = entry.hardLinkId;
             out.write(reinterpret_cast<const char*>(&hId), sizeof(hId));
@@ -86,21 +137,18 @@ void ArchiveWriter::writeTypePayload(std::ofstream& out, const FileEntry& entry)
         break;
     }
     case FileType::Symlink: {
-        // TargetLength + SymlinkTarget
         uint32_t targetLen = static_cast<uint32_t>(entry.symlinkTarget.size());
         out.write(reinterpret_cast<const char*>(&targetLen), sizeof(targetLen));
         out.write(entry.symlinkTarget.data(), targetLen);
         break;
     }
     case FileType::Device: {
-        // DeviceMajor + DeviceMinor
         out.write(reinterpret_cast<const char*>(&entry.deviceMajor), sizeof(entry.deviceMajor));
         out.write(reinterpret_cast<const char*>(&entry.deviceMinor), sizeof(entry.deviceMinor));
         break;
     }
     case FileType::Fifo:
     case FileType::Directory:
-        // No extra payload
         break;
     }
 }

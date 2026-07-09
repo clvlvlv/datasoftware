@@ -124,14 +124,14 @@ int doUnpack(const std::string& archivePath, const std::string& outputDir) {
     size_t current = 0;
     for (const auto& entry : entries) {
         if (entry.fileType == datasoftware::FileType::Directory) {
-            auto filePath = std::filesystem::path(outputDir) / entry.relativePath;
+            auto filePath = auto filePath = std::filesystem::u8path(outputDir) / std::filesystem::u8path(entry.relativePath);;
             std::filesystem::create_directories(filePath);
             continue;
         }
 
         std::cout << "[PROGRESS] " << current << " " << total << " " << entry.relativePath << std::endl;
 
-        auto filePath = std::filesystem::path(outputDir) / entry.relativePath;
+        auto filePath = auto filePath = std::filesystem::u8path(outputDir) / std::filesystem::u8path(entry.relativePath);;
         std::filesystem::create_directories(filePath.parent_path());
 
         std::ofstream out(filePath, std::ios::binary);
