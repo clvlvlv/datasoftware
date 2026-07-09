@@ -1,0 +1,761 @@
+"""
+主窗口模块
+"""
+
+import os
+import time
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QTabWidget, QGroupBox, QLabel, QLineEdit, QPushButton,
+    QProgressBar, QFileDialog, QMessageBox, QTreeWidgetItem,
+    QComboBox, QSpinBox, QDateTimeEdit, QFrame, QScrollArea
+)
+from PyQt5.QtCore import Qt, QThreadPool, QDateTime, QDate
+from PyQt5.QtGui import QIcon
+
+from .styles import StyleManager
+from .widgets import (
+    ModernButton, ModernLineEdit, ModernProgressBar,
+    FilePreviewTree, SectionHeader, LogPanel
+)
+from .workers import BackupWorker, RestoreWorker, CompressWorker, EncryptWorker
+
+
+class MainWindow(QMainWindow):
+    """主窗口"""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("📦 数据备份软件")
+        self.setMinimumSize(900, 750)
+        self.resize(1000, 800)
+
+        StyleManager().apply(self)
+
+        self._selected_files = []
+        self._source_dir = ""
+        self._operation_start_time = 0
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(8)
+
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        self._setup_backup_tab()
+        self._setup_compression_tab()
+        self._setup_encryption_tab()
+
+    def _elapsed_str(self):
+        """返回从操作开始到现在的耗时字符串"""
+        elapsed = time.time() - self._operation_start_time
+        if elapsed < 1:
+            return f"{elapsed*1000:.0f} ms"
+        return f"{elapsed:.1f} 秒"
+
+    # ================================================================
+    #  备份与恢复标签页
+    # ================================================================
+
+    def _setup_backup_tab(self):
+        tab = QWidget()
+        outer_layout = QVBoxLayout(tab)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        # ---- 来源选择 ----
+        source_group = QGroupBox("📂 选择备份来源")
+        source_layout = QVBoxLayout(source_group)
+        source_layout.addWidget(QLabel("请选择要备份的文件或文件夹："))
+
+        btn_row = QHBoxLayout()
+        self.source_label = QLabel("未选择任何文件")
+        self.source_label.setStyleSheet("font-weight: bold; color: #89b4fa;")
+        btn_row.addWidget(self.source_label, 1)
+
+        add_folder_btn = ModernButton("📁 添加文件夹")
+        add_folder_btn.clicked.connect(self._on_add_folder)
+        btn_row.addWidget(add_folder_btn)
+
+        add_files_btn = ModernButton("📄 添加文件")
+        add_files_btn.clicked.connect(self._on_add_files)
+        btn_row.addWidget(add_files_btn)
+
+        clear_btn = ModernButton("🗑️ 清空", danger=True)
+        clear_btn.clicked.connect(self._on_clear_files)
+        btn_row.addWidget(clear_btn)
+
+        source_layout.addLayout(btn_row)
+        layout.addWidget(source_group)
+
+        # ---- 文件预览 ----
+        preview_group = QGroupBox("📋 文件列表")
+        preview_layout = QVBoxLayout(preview_group)
+        self.file_preview = FilePreviewTree()
+        self.file_preview.setMinimumHeight(140)
+        self.file_preview.setMaximumHeight(220)
+        preview_layout.addWidget(self.file_preview)
+
+        self.preview_summary = QLabel("")
+        self.preview_summary.setStyleSheet("color: #a6adc8;")
+        preview_layout.addWidget(self.preview_summary)
+        layout.addWidget(preview_group)
+
+        # ---- 过滤器 ----
+        filter_group = QGroupBox("🔍 过滤器")
+        filter_outer = QVBoxLayout(filter_group)
+
+        filter_toggle_btn = ModernButton("⚙️ 展开/收起过滤器")
+        filter_toggle_btn.setCheckable(True)
+        filter_toggle_btn.clicked.connect(self._on_toggle_filters)
+        filter_outer.addWidget(filter_toggle_btn)
+
+        self.filter_panel = QWidget()
+        filter_layout = QFormLayout(self.filter_panel)
+        filter_layout.setContentsMargins(0, 8, 0, 4)
+        filter_layout.setHorizontalSpacing(12)
+        filter_layout.setVerticalSpacing(6)
+
+        self.filter_ext = ModernLineEdit(".txt, .jpg, .pdf")
+        filter_layout.addRow("扩展名:", self.filter_ext)
+
+        self.filter_name = ModernLineEdit("文件名子串")
+        filter_layout.addRow("文件名:", self.filter_name)
+
+        self.filter_path_inc = ModernLineEdit("docs/**, **/data/*.csv")
+        filter_layout.addRow("包含路径:", self.filter_path_inc)
+
+        self.filter_path_exc = ModernLineEdit("tmp/**, *.log")
+        filter_layout.addRow("排除路径:", self.filter_path_exc)
+
+        size_row = QHBoxLayout()
+        self.filter_min_size = QSpinBox()
+        self.filter_min_size.setRange(0, 99999999)
+        self.filter_min_size.setSuffix(" bytes")
+        self.filter_min_size.setSpecialValueText("无限制")
+        self.filter_max_size = QSpinBox()
+        self.filter_max_size.setRange(0, 99999999)
+        self.filter_max_size.setSuffix(" bytes")
+        self.filter_max_size.setSpecialValueText("无限制")
+        size_row.addWidget(QLabel("最小:"))
+        size_row.addWidget(self.filter_min_size)
+        size_row.addWidget(QLabel("最大:"))
+        size_row.addWidget(self.filter_max_size)
+        size_row.addStretch()
+        filter_layout.addRow("大小:", size_row)
+
+        self.filter_user = ModernLineEdit("用户名")
+        filter_layout.addRow("用户:", self.filter_user)
+
+        apply_filter_btn = ModernButton("✅ 应用过滤器", primary=True)
+        apply_filter_btn.clicked.connect(self._on_apply_filters)
+        filter_layout.addRow("", apply_filter_btn)
+
+        self.filter_panel.setVisible(False)
+        filter_outer.addWidget(self.filter_panel)
+
+        self.filter_label = QLabel("未设置过滤器")
+        self.filter_label.setObjectName("filterLabel")
+        filter_outer.addWidget(self.filter_label)
+
+        layout.addWidget(filter_group)
+
+        # ---- 加密 + 目标 并排 ----
+        settings_row = QHBoxLayout()
+
+        enc_group = QGroupBox("🔐 加密设置")
+        enc_form = QFormLayout(enc_group)
+        enc_form.setHorizontalSpacing(8)
+        self.backup_password = ModernLineEdit("留空则不加密")
+        self.backup_password.setEchoMode(QLineEdit.Password)
+        enc_form.addRow("密码:", self.backup_password)
+        settings_row.addWidget(enc_group)
+
+        dest_group = QGroupBox("💾 备份保存位置")
+        dest_layout = QVBoxLayout(dest_group)
+        dest_row = QHBoxLayout()
+        self.archive_path = ModernLineEdit("选择备份文件保存位置...")
+        browse_archive_btn = ModernButton("📂 浏览")
+        browse_archive_btn.clicked.connect(self._on_browse_archive)
+        dest_row.addWidget(self.archive_path, 1)
+        dest_row.addWidget(browse_archive_btn)
+        dest_layout.addLayout(dest_row)
+        settings_row.addWidget(dest_group)
+
+        layout.addLayout(settings_row)
+
+        # ---- 操作按钮 ----
+        action_row = QHBoxLayout()
+        self.backup_btn = ModernButton("🚀 开始备份", primary=True)
+        self.backup_btn.clicked.connect(self._on_backup)
+        self.backup_btn.setMinimumHeight(38)
+        self.backup_btn.setMinimumWidth(160)
+        action_row.addWidget(self.backup_btn)
+        action_row.addStretch()
+        layout.addLayout(action_row)
+
+        # ---- 分隔线 ----
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("background-color: #45475a; max-height: 1px;")
+        layout.addWidget(line)
+
+        # ---- 恢复区域 ----
+        restore_group = QGroupBox("🔄 恢复数据")
+        restore_layout = QVBoxLayout(restore_group)
+        restore_layout.setSpacing(8)
+
+        restore_archive_row = QHBoxLayout()
+        restore_archive_row.addWidget(QLabel("备份文件:"))
+        self.restore_archive = ModernLineEdit("选择要恢复的备份文件...")
+        browse_restore_btn = ModernButton("📂 浏览")
+        browse_restore_btn.clicked.connect(self._on_browse_restore_archive)
+        restore_archive_row.addWidget(self.restore_archive, 1)
+        restore_archive_row.addWidget(browse_restore_btn)
+        restore_layout.addLayout(restore_archive_row)
+
+        restore_dir_row = QHBoxLayout()
+        restore_dir_row.addWidget(QLabel("目标目录:"))
+        self.restore_dir = ModernLineEdit("选择恢复目标目录...")
+        browse_restore_dir_btn = ModernButton("📂 浏览")
+        browse_restore_dir_btn.clicked.connect(self._on_browse_restore_dir)
+        restore_dir_row.addWidget(self.restore_dir, 1)
+        restore_dir_row.addWidget(browse_restore_dir_btn)
+        restore_layout.addLayout(restore_dir_row)
+
+        restore_pwd_row = QHBoxLayout()
+        restore_pwd_row.addWidget(QLabel("密码:"))
+        self.restore_password = ModernLineEdit("加密备份需要密码")
+        self.restore_password.setEchoMode(QLineEdit.Password)
+        restore_pwd_row.addWidget(self.restore_password, 1)
+        restore_layout.addLayout(restore_pwd_row)
+
+        restore_btn = ModernButton("🔄 开始恢复", success=True)
+        restore_btn.clicked.connect(self._on_restore)
+        restore_btn.setMinimumHeight(38)
+        restore_btn.setMinimumWidth(160)
+        restore_layout.addWidget(restore_btn)
+
+        layout.addWidget(restore_group)
+
+        # ---- 状态 ----
+        status_group = QGroupBox("📊 状态")
+        status_layout = QVBoxLayout(status_group)
+        self.progress_bar = ModernProgressBar()
+        status_layout.addWidget(self.progress_bar)
+        self.status_label = QLabel("就绪")
+        self.status_label.setObjectName("statusLabel")
+        status_layout.addWidget(self.status_label)
+        layout.addWidget(status_group)
+
+        # ---- 日志面板 ----
+        self.backup_log = LogPanel("📋 备份/恢复日志")
+        layout.addWidget(self.backup_log)
+
+        layout.addStretch()
+
+        scroll.setWidget(container)
+        outer_layout.addWidget(scroll)
+
+        self.tabs.addTab(tab, "📦 备份与恢复")
+
+    # ================================================================
+    #  压缩标签页
+    # ================================================================
+
+    def _setup_compression_tab(self):
+        tab = QWidget()
+        outer_layout = QVBoxLayout(tab)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        algo_group = QGroupBox("⚙️ 压缩设置")
+        algo_layout = QHBoxLayout(algo_group)
+        algo_layout.addWidget(QLabel("压缩算法:"))
+        self.algo_combo = QComboBox()
+        self.algo_combo.addItems(["RLE (行程编码)", "LZ77 (滑动窗口)", "Huffman (哈夫曼)"])
+        algo_layout.addWidget(self.algo_combo)
+        algo_layout.addStretch()
+        layout.addWidget(algo_group)
+
+        io_group = QGroupBox("📁 文件设置")
+        io_layout = QVBoxLayout(io_group)
+        io_layout.setSpacing(8)
+
+        input_row = QHBoxLayout()
+        input_row.addWidget(QLabel("输入文件:"))
+        self.comp_input = ModernLineEdit("选择要压缩的文件...")
+        input_row.addWidget(self.comp_input, 1)
+        browse_input_btn = ModernButton("📂 浏览")
+        browse_input_btn.clicked.connect(self._on_browse_comp_input)
+        input_row.addWidget(browse_input_btn)
+        io_layout.addLayout(input_row)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("输出文件:"))
+        self.comp_output = ModernLineEdit("选择输出位置...")
+        output_row.addWidget(self.comp_output, 1)
+        browse_output_btn = ModernButton("📂 浏览")
+        browse_output_btn.clicked.connect(self._on_browse_comp_output)
+        output_row.addWidget(browse_output_btn)
+        io_layout.addLayout(output_row)
+
+        layout.addWidget(io_group)
+
+        comp_btn_layout = QHBoxLayout()
+        self.compress_btn = ModernButton("⬇️ 压缩", primary=True)
+        self.compress_btn.clicked.connect(self._on_compress)
+        self.compress_btn.setMinimumHeight(38)
+        self.compress_btn.setMinimumWidth(140)
+        comp_btn_layout.addWidget(self.compress_btn)
+
+        self.decompress_btn = ModernButton("⬆️ 解压", success=True)
+        self.decompress_btn.clicked.connect(self._on_decompress)
+        self.decompress_btn.setMinimumHeight(38)
+        self.decompress_btn.setMinimumWidth(140)
+        comp_btn_layout.addWidget(self.decompress_btn)
+        comp_btn_layout.addStretch()
+        layout.addLayout(comp_btn_layout)
+
+        status_group = QGroupBox("📊 状态")
+        status_layout = QVBoxLayout(status_group)
+        self.comp_progress = ModernProgressBar()
+        self.comp_progress.setVisible(False)
+        status_layout.addWidget(self.comp_progress)
+        self.comp_status = QLabel("就绪")
+        self.comp_status.setObjectName("statusLabel")
+        status_layout.addWidget(self.comp_status)
+        layout.addWidget(status_group)
+
+        self.comp_log = LogPanel("📋 压缩日志")
+        layout.addWidget(self.comp_log)
+
+        layout.addStretch()
+
+        scroll.setWidget(container)
+        outer_layout.addWidget(scroll)
+
+        self.tabs.addTab(tab, "🗜️ 压缩")
+
+    # ================================================================
+    #  加密标签页
+    # ================================================================
+
+    def _setup_encryption_tab(self):
+        tab = QWidget()
+        outer_layout = QVBoxLayout(tab)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(10)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        io_group = QGroupBox("📁 文件设置")
+        io_layout = QVBoxLayout(io_group)
+        io_layout.setSpacing(8)
+
+        input_row = QHBoxLayout()
+        input_row.addWidget(QLabel("输入文件:"))
+        self.enc_input = ModernLineEdit("选择要加密/解密的文件...")
+        input_row.addWidget(self.enc_input, 1)
+        browse_enc_input_btn = ModernButton("📂 浏览")
+        browse_enc_input_btn.clicked.connect(self._on_browse_enc_input)
+        input_row.addWidget(browse_enc_input_btn)
+        io_layout.addLayout(input_row)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("输出文件:"))
+        self.enc_output = ModernLineEdit("选择输出位置...")
+        output_row.addWidget(self.enc_output, 1)
+        browse_enc_output_btn = ModernButton("📂 浏览")
+        browse_enc_output_btn.clicked.connect(self._on_browse_enc_output)
+        output_row.addWidget(browse_enc_output_btn)
+        io_layout.addLayout(output_row)
+
+        layout.addWidget(io_group)
+
+        pwd_group = QGroupBox("🔑 密码设置")
+        pwd_layout = QHBoxLayout(pwd_group)
+        pwd_layout.addWidget(QLabel("密码:"))
+        self.enc_password = ModernLineEdit("请输入密码")
+        self.enc_password.setEchoMode(QLineEdit.Password)
+        pwd_layout.addWidget(self.enc_password, 1)
+        layout.addWidget(pwd_group)
+
+        enc_btn_layout = QHBoxLayout()
+        self.encrypt_btn = ModernButton("🔒 加密", primary=True)
+        self.encrypt_btn.clicked.connect(self._on_encrypt)
+        self.encrypt_btn.setMinimumHeight(38)
+        self.encrypt_btn.setMinimumWidth(140)
+        enc_btn_layout.addWidget(self.encrypt_btn)
+
+        self.decrypt_btn = ModernButton("🔓 解密", success=True)
+        self.decrypt_btn.clicked.connect(self._on_decrypt)
+        self.decrypt_btn.setMinimumHeight(38)
+        self.decrypt_btn.setMinimumWidth(140)
+        enc_btn_layout.addWidget(self.decrypt_btn)
+        enc_btn_layout.addStretch()
+        layout.addLayout(enc_btn_layout)
+
+        status_group = QGroupBox("📊 状态")
+        status_layout = QVBoxLayout(status_group)
+        self.enc_progress = ModernProgressBar()
+        self.enc_progress.setVisible(False)
+        status_layout.addWidget(self.enc_progress)
+        self.enc_status = QLabel("就绪")
+        self.enc_status.setObjectName("statusLabel")
+        status_layout.addWidget(self.enc_status)
+        layout.addWidget(status_group)
+
+        self.enc_log = LogPanel("📋 加密日志")
+        layout.addWidget(self.enc_log)
+
+        layout.addStretch()
+
+        scroll.setWidget(container)
+        outer_layout.addWidget(scroll)
+
+        self.tabs.addTab(tab, "🔐 加密")
+
+    # ================================================================
+    #  备份相关槽函数
+    # ================================================================
+
+    def _on_add_folder(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "选择源目录")
+        if dir_path:
+            self._source_dir = dir_path
+            self._selected_files = []
+            self._refresh_preview()
+            self.backup_log.log(f"已选择目录: {dir_path}", "info")
+
+    def _on_add_files(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "选择文件")
+        if files:
+            self._source_dir = ""
+            self._selected_files.extend(files)
+            self._refresh_preview()
+            self.backup_log.log(f"已添加 {len(files)} 个文件", "info")
+
+    def _on_clear_files(self):
+        self._source_dir = ""
+        self._selected_files = []
+        self._refresh_preview()
+        self.backup_log.log("已清空文件列表", "warning")
+
+    def _refresh_preview(self):
+        self.file_preview.clear_items()
+
+        total_size = 0
+        if self._source_dir:
+            self.source_label.setText(f"📁 目录: {self._source_dir}")
+            for i in range(5):
+                self.file_preview.add_file(f"文件_{i}.txt", "文件", 1024 * (i + 1))
+                total_size += 1024 * (i + 1)
+        elif self._selected_files:
+            self.source_label.setText(f"📄 已选择 {len(self._selected_files)} 个文件")
+            for path in self._selected_files:
+                name = os.path.basename(path)
+                size = os.path.getsize(path) if os.path.exists(path) else 0
+                self.file_preview.add_file(name, "文件", size)
+                total_size += size
+        else:
+            self.source_label.setText("未选择任何文件")
+
+        if total_size > 0:
+            self.preview_summary.setText(
+                f"总计: {self.file_preview.topLevelItemCount()} 个项目, "
+                f"{self._format_size(total_size)}"
+            )
+        else:
+            self.preview_summary.setText("")
+
+    def _format_size(self, size):
+        if size >= 1024**3:
+            return f"{size/1024**3:.2f} GB"
+        elif size >= 1024**2:
+            return f"{size/1024**2:.2f} MB"
+        elif size >= 1024:
+            return f"{size/1024:.1f} KB"
+        return f"{size} B"
+
+    def _on_toggle_filters(self, checked):
+        self.filter_panel.setVisible(checked)
+
+    def _on_apply_filters(self):
+        filters = []
+        if self.filter_ext.text().strip():
+            filters.append(f"扩展名: {self.filter_ext.text()}")
+        if self.filter_name.text().strip():
+            filters.append(f"文件名: {self.filter_name.text()}")
+        if self.filter_path_inc.text().strip():
+            filters.append(f"包含路径: {self.filter_path_inc.text()}")
+        if self.filter_path_exc.text().strip():
+            filters.append(f"排除路径: {self.filter_path_exc.text()}")
+
+        if filters:
+            self.filter_label.setText(" | ".join(filters))
+            self.backup_log.log(f"已应用过滤器: {' | '.join(filters)}", "info")
+        else:
+            self.filter_label.setText("未设置过滤器")
+
+        self._refresh_preview()
+
+    def _on_browse_archive(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "选择备份文件", "", "备份文件 (*.dat);;所有文件 (*)"
+        )
+        if path:
+            self.archive_path.setText(path)
+            self.backup_log.log(f"备份目标: {path}", "info")
+
+    def _on_browse_restore_archive(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择备份文件", "", "备份文件 (*.dat);;所有文件 (*)"
+        )
+        if path:
+            self.restore_archive.setText(path)
+
+    def _on_browse_restore_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "选择恢复目标目录")
+        if path:
+            self.restore_dir.setText(path)
+
+    def _on_backup(self):
+        dest = self.archive_path.text().strip()
+        if not dest:
+            QMessageBox.warning(self, "提示", "请选择备份文件保存位置")
+            return
+
+        if not self._source_dir and not self._selected_files:
+            QMessageBox.warning(self, "提示", "请选择要备份的文件或文件夹")
+            return
+
+        self._operation_start_time = time.time()
+        self.backup_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.status_label.setText("正在备份...")
+        self.backup_log.log(f"开始备份 → {dest}", "info")
+
+        self.worker = BackupWorker(
+            self._source_dir or "",
+            dest,
+            self.backup_password.text(),
+            "folder" if self._source_dir else "files",
+            self._selected_files
+        )
+        self.worker.progress.connect(self._on_backup_progress)
+        self.worker.log_message.connect(self.backup_log.log)
+        self.worker.finished.connect(self._on_backup_finished)
+        self.worker.start()
+
+    def _on_backup_progress(self, current, total, message):
+        self.progress_bar.setProgress(current, total)
+        self.status_label.setText(f"正在备份... ({current}/{total})")
+
+    def _on_backup_finished(self, success, message, count):
+        elapsed = self._elapsed_str()
+        self.backup_btn.setEnabled(True)
+        if success:
+            self.progress_bar.setValue(100)
+            self.status_label.setText(f"备份完成 — {count} 个文件，耗时 {elapsed}")
+            self.backup_log.log(f"备份完成！共 {count} 个文件，耗时 {elapsed}", "success")
+            QMessageBox.information(self, "备份成功", f"{message}\n共 {count} 个文件，耗时 {elapsed}")
+        else:
+            self.progress_bar.setValue(0)
+            self.status_label.setText(f"备份失败 — 耗时 {elapsed}")
+            self.backup_log.log(f"备份失败: {message}，耗时 {elapsed}", "error")
+            QMessageBox.critical(self, "备份失败", message)
+
+    def _on_restore(self):
+        source = self.restore_archive.text().strip()
+        dest = self.restore_dir.text().strip()
+
+        if not source:
+            QMessageBox.warning(self, "提示", "请选择要恢复的备份文件")
+            return
+        if not dest:
+            QMessageBox.warning(self, "提示", "请选择恢复目标目录")
+            return
+
+        self._operation_start_time = time.time()
+        self.status_label.setText("正在恢复...")
+        self.progress_bar.setValue(0)
+        self.backup_log.log(f"开始恢复: {source} → {dest}", "info")
+
+        self.restore_worker = RestoreWorker(source, dest, self.restore_password.text())
+        self.restore_worker.progress.connect(self._on_restore_progress)
+        self.restore_worker.log_message.connect(self.backup_log.log)
+        self.restore_worker.finished.connect(self._on_restore_finished)
+        self.restore_worker.start()
+
+    def _on_restore_progress(self, current, total, message):
+        self.progress_bar.setProgress(current, total)
+        self.status_label.setText(f"正在恢复... ({current}/{total})")
+
+    def _on_restore_finished(self, success, message, count):
+        elapsed = self._elapsed_str()
+        if success:
+            self.progress_bar.setValue(100)
+            self.status_label.setText(f"恢复完成 — {count} 个文件，耗时 {elapsed}")
+            self.backup_log.log(f"恢复完成！共 {count} 个文件，耗时 {elapsed}", "success")
+            QMessageBox.information(self, "恢复成功", f"{message}\n共 {count} 个文件，耗时 {elapsed}")
+        else:
+            self.progress_bar.setValue(0)
+            self.status_label.setText(f"恢复失败 — 耗时 {elapsed}")
+            self.backup_log.log(f"恢复失败: {message}，耗时 {elapsed}", "error")
+            QMessageBox.critical(self, "恢复失败", message)
+
+    # ================================================================
+    #  压缩相关槽函数
+    # ================================================================
+
+    def _on_browse_comp_input(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择输入文件")
+        if path:
+            self.comp_input.setText(path)
+
+    def _on_browse_comp_output(self):
+        path, _ = QFileDialog.getSaveFileName(self, "选择输出文件")
+        if path:
+            self.comp_output.setText(path)
+
+    def _on_compress(self):
+        self._do_compression("compress")
+
+    def _on_decompress(self):
+        self._do_compression("decompress")
+
+    def _do_compression(self, action):
+        input_file = self.comp_input.text().strip()
+        output_file = self.comp_output.text().strip()
+
+        if not input_file:
+            QMessageBox.warning(self, "提示", "请选择输入文件")
+            return
+        if not output_file:
+            QMessageBox.warning(self, "提示", "请选择输出文件")
+            return
+
+        self._operation_start_time = time.time()
+        action_name = "压缩" if action == "compress" else "解压"
+        self.compress_btn.setEnabled(False)
+        self.decompress_btn.setEnabled(False)
+        self.comp_progress.setVisible(True)
+        self.comp_progress.setValue(0)
+        self.comp_status.setText(f"正在{action_name}...")
+        self.comp_log.log(f"开始{action_name}: {input_file} → {output_file}", "info")
+
+        algo = self.algo_combo.currentIndex()
+        self.comp_worker = CompressWorker(input_file, output_file, algo, action)
+        self.comp_worker.log_message.connect(self.comp_log.log)
+        self.comp_worker.finished.connect(self._on_compression_finished)
+        self.comp_worker.start()
+
+    def _on_compression_finished(self, success, message):
+        elapsed = self._elapsed_str()
+        self.compress_btn.setEnabled(True)
+        self.decompress_btn.setEnabled(True)
+        self.comp_progress.setVisible(False)
+
+        if success:
+            self.comp_progress.setValue(100)
+            self.comp_status.setText(f"完成 — 耗时 {elapsed}")
+            self.comp_log.log(f"{message}，耗时 {elapsed}", "success")
+            QMessageBox.information(self, "操作成功", f"{message}\n耗时 {elapsed}")
+        else:
+            self.comp_status.setText(f"失败 — 耗时 {elapsed}")
+            self.comp_log.log(f"操作失败: {message}，耗时 {elapsed}", "error")
+            QMessageBox.critical(self, "操作失败", message)
+
+    # ================================================================
+    #  加密相关槽函数
+    # ================================================================
+
+    def _on_browse_enc_input(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择输入文件")
+        if path:
+            self.enc_input.setText(path)
+
+    def _on_browse_enc_output(self):
+        path, _ = QFileDialog.getSaveFileName(self, "选择输出文件")
+        if path:
+            self.enc_output.setText(path)
+
+    def _on_encrypt(self):
+        self._do_encryption("encrypt")
+
+    def _on_decrypt(self):
+        self._do_encryption("decrypt")
+
+    def _do_encryption(self, action):
+        input_file = self.enc_input.text().strip()
+        output_file = self.enc_output.text().strip()
+        password = self.enc_password.text()
+
+        if not input_file:
+            QMessageBox.warning(self, "提示", "请选择输入文件")
+            return
+        if not output_file:
+            QMessageBox.warning(self, "提示", "请选择输出文件")
+            return
+        if not password:
+            QMessageBox.warning(self, "提示", "请输入密码")
+            return
+
+        self._operation_start_time = time.time()
+        action_name = "加密" if action == "encrypt" else "解密"
+        self.encrypt_btn.setEnabled(False)
+        self.decrypt_btn.setEnabled(False)
+        self.enc_progress.setVisible(True)
+        self.enc_progress.setValue(0)
+        self.enc_status.setText(f"正在{action_name}...")
+        self.enc_log.log(f"开始{action_name}: {input_file} → {output_file}", "info")
+
+        self.enc_worker = EncryptWorker(input_file, output_file, password, action)
+        self.enc_worker.log_message.connect(self.enc_log.log)
+        self.enc_worker.finished.connect(self._on_encryption_finished)
+        self.enc_worker.start()
+
+    def _on_encryption_finished(self, success, message):
+        elapsed = self._elapsed_str()
+        self.encrypt_btn.setEnabled(True)
+        self.decrypt_btn.setEnabled(True)
+        self.enc_progress.setVisible(False)
+
+        if success:
+            self.enc_progress.setValue(100)
+            self.enc_status.setText(f"完成 — 耗时 {elapsed}")
+            self.enc_log.log(f"{message}，耗时 {elapsed}", "success")
+            QMessageBox.information(self, "操作成功", f"{message}\n耗时 {elapsed}")
+        else:
+            self.enc_status.setText(f"失败 — 耗时 {elapsed}")
+            self.enc_log.log(f"操作失败: {message}，耗时 {elapsed}", "error")
+            QMessageBox.critical(self, "操作失败", message)
