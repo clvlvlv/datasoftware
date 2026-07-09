@@ -16,8 +16,19 @@ namespace fs = std::filesystem;
 
 namespace datasoftware {
 
+// Helper: convert filesystem path to UTF-8 std::string
+static std::string pathToUtf8(const fs::path& p) {
+    auto u8 = p.u8string();
+    // C++17: u8string() returns std::string; C++20: returns std::u8string
+    #if defined(__cpp_lib_char8_t) || defined(_MSC_VER) && _MSVC_LANG >= 202002
+    return std::string(reinterpret_cast<const char*>(u8.c_str()), u8.size());
+    #else
+    return u8;
+    #endif
+}
+
 // ---- read file metadata using Windows API ----
-static FileMetadata readFileMetadata(const fs::path& fullPath) {
+FileMetadata FileTraverser::readFileMetadata(const fs::path& fullPath) {
     FileMetadata md;
 
     WIN32_FILE_ATTRIBUTE_DATA info;
@@ -36,13 +47,13 @@ static FileMetadata readFileMetadata(const fs::path& fullPath) {
 }
 
 // ---- attach metadata to a FileEntry ----
-static void attachMetadata(FileEntry& fe, const fs::path& fullPath) {
+void FileTraverser::attachMetadata(FileEntry& fe, const fs::path& fullPath) {
     fe.metadata = readFileMetadata(fullPath);
 }
 
 // ---- helper: count files (fast) ----
 static size_t countFiles(const std::string& sourceDir) {
-    fs::path base(sourceDir);
+    fs::path base = fs::u8path(sourceDir);
     size_t count = 0;
     auto opts = fs::directory_options::skip_permission_denied;
     for (auto it = fs::recursive_directory_iterator(base, opts);
@@ -68,7 +79,7 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
 std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
                                                 ProgressCallback progress,
                                                 const BackupFilter& filter) {
-    fs::path base(sourceDir);
+    fs::path base = fs::u8path(sourceDir);
     if (!fs::exists(base) || !fs::is_directory(base)) {
         throw std::runtime_error("Source directory does not exist: " + sourceDir);
     }
@@ -84,8 +95,7 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
 
     for (const auto& entry : fs::recursive_directory_iterator(base, opts)) {
         fs::path relative = fs::relative(entry.path(), base);
-        std::string relStr = relative.string();
-        std::replace(relStr.begin(), relStr.end(), '\\', '/');
+        std::string relStr = pathToUtf8(relative);
         auto status = entry.symlink_status();
 
         FileEntry fe;
@@ -187,21 +197,115 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
     return entries;
 }
 
+// ---- listFiles: collect file info without reading content ----
+std::vector<FileTraverser::FileInfo> FileTraverser::listFiles(
+    const std::string& sourceDir,
+    ProgressCallback progress,
+    const BackupFilter& filter) {
+
+    fs::path base = fs::u8path(sourceDir);
+    if (!fs::exists(base) || !fs::is_directory(base)) {
+        throw std::runtime_error("Source directory does not exist: " + sourceDir);
+    }
+
+    // Fast count for progress
+    size_t total = 0;
+    auto opts = fs::directory_options::skip_permission_denied;
+    for (auto it = fs::recursive_directory_iterator(base, opts);
+         it != fs::recursive_directory_iterator(); ++it) {
+        if (fs::is_symlink(it->symlink_status())) continue;
+        if (fs::is_regular_file(it->symlink_status())) ++total;
+    }
+    if (progress) progress(0, total, "Scanning...");
+
+    std::vector<FileInfo> files;
+    std::unordered_set<std::string> addedDirs;
+    size_t processed = 0;
+
+    for (const auto& entry : fs::recursive_directory_iterator(base, opts)) {
+        fs::path relative = fs::relative(entry.path(), base);
+        std::string relStr = pathToUtf8(relative);
+        auto status = entry.symlink_status();
+
+        if (fs::is_directory(status)) {
+            if (addedDirs.find(relStr) == addedDirs.end()) {
+                FileInfo fi;
+                fi.relativePath = relStr;
+                fi.fileType = FileType::Directory;
+                files.push_back(std::move(fi));
+                addedDirs.insert(relStr);
+            }
+            continue;
+        }
+
+        if (fs::is_symlink(status)) {
+            std::error_code ec;
+            fs::path target = fs::read_symlink(entry.path(), ec);
+            FileInfo fi;
+            fi.relativePath = relStr;
+            fi.fileType = FileType::Symlink;
+            fi.symlinkTarget = ec ? "" : pathToUtf8(target);
+            files.push_back(std::move(fi));
+            continue;
+        }
+
+        if (fs::is_regular_file(status)) {
+            // Apply filter
+            if (filter.isActive()) {
+                std::string ext;
+                auto dot = relStr.rfind('.');
+                if (dot != std::string::npos) {
+                    ext = relStr.substr(dot);
+                    for (auto& c : ext) c = static_cast<char>(std::tolower(c));
+                }
+                auto md = readFileMetadata(entry.path());
+                auto ft = fs::last_write_time(entry.path());
+                int64_t mtime = 0;
+                try {
+                    auto s = std::chrono::duration_cast<std::chrono::seconds>(
+                        ft.time_since_epoch()).count();
+                    #ifdef _WIN32
+                    mtime = static_cast<int64_t>(s - 11644473600LL);
+                    #else
+                    mtime = static_cast<int64_t>(s);
+                    #endif
+                } catch (...) { mtime = 0; }
+                uint64_t fsize = fs::file_size(entry.path());
+                if (!filter.matches(relStr, ext, fsize, mtime, md.owner))
+                    continue;
+            }
+
+            if (progress) progress(processed, total, relStr);
+
+            FileInfo fi;
+            fi.relativePath = relStr;
+            fi.fileType = FileType::Regular;
+            fi.fileSize = fs::file_size(entry.path());
+            fi.metadata = readFileMetadata(entry.path());
+            files.push_back(std::move(fi));
+            ++processed;
+        }
+    }
+
+    if (progress) progress(total, total, "Done.");
+    return files;
+}
+
 FileEntry FileTraverser::readFile(const std::string& baseDir,
                                    const std::string& relativePath) {
-    fs::path fullPath = fs::path(baseDir) / relativePath;
+    fs::path fullPath = fs::u8path(baseDir) / fs::u8path(relativePath);
     uint64_t size = fs::file_size(fullPath);
 
     std::ifstream file(fullPath, std::ios::binary);
     if (!file.is_open()) {
-        throw std::runtime_error("Cannot open file: " + fullPath.string());
+        throw std::runtime_error("Cannot open file: " + pathToUtf8(fullPath));
     }
 
     std::vector<char> buffer(size);
     if (size > 0) {
         file.read(buffer.data(), size);
         if (!file) {
-            throw std::runtime_error("Failed to read file: " + fullPath.string());
+            throw std::runtime_error("Failed to read file: " + pathToUtf8(fullPath));
         }
     }
 

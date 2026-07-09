@@ -2,6 +2,13 @@
 #include "datasoftware/ArchiveWriter.h"
 #include <cstring>
 #include <stdexcept>
+#include <filesystem>
+#include <fstream>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+namespace fs = std::filesystem;
 
 namespace datasoftware {
 
@@ -20,7 +27,6 @@ std::vector<FileEntry> ArchiveReader::read(const std::string& archivePath) {
 
     for (uint32_t i = 0; i < entryCount; ++i) {
         if (version == 1) {
-            // v1: just path + size + data (no file type)
             uint32_t pathLen;
             in.read(reinterpret_cast<char*>(&pathLen), sizeof(pathLen));
             std::string path(pathLen, '\0');
@@ -31,8 +37,7 @@ std::vector<FileEntry> ArchiveReader::read(const std::string& archivePath) {
             if (fileSize > 0) in.read(data.data(), fileSize);
             entries.emplace_back(std::move(path), fileSize, std::move(data));
         } else {
-            // v2/v3: path + type + payload + (optional metadata in v3)
-            auto fe = readEntryCommon(in);
+            auto fe = readEntryV2(in);
             if (version >= 3) {
                 readMetadata(in, fe.metadata);
             }
@@ -41,6 +46,156 @@ std::vector<FileEntry> ArchiveReader::read(const std::string& archivePath) {
     }
 
     return entries;
+}
+
+bool ArchiveReader::extractNext(std::ifstream& in, const std::string& outputDir,
+                                 uint32_t version) {
+    if (version == 1) {
+        // v1: read into memory and write out (v1 is legacy, small files)
+        uint32_t pathLen;
+        in.read(reinterpret_cast<char*>(&pathLen), sizeof(pathLen));
+        if (in.eof()) return false;
+        std::string path(pathLen, '\0');
+        in.read(&path[0], pathLen);
+        uint64_t fileSize;
+        in.read(reinterpret_cast<char*>(&fileSize), sizeof(fileSize));
+        std::vector<char> data(fileSize);
+        if (fileSize > 0) in.read(data.data(), fileSize);
+
+        fs::path outPath = fs::u8path(outputDir) / fs::u8path(path);
+        fs::create_directories(outPath.parent_path());
+        std::ofstream out(outPath, std::ios::binary);
+        if (fileSize > 0) out.write(data.data(), fileSize);
+        out.close();
+        return true;
+    }
+
+    // v2/v3: read entry header and stream content
+    uint32_t pathLen;
+    in.read(reinterpret_cast<char*>(&pathLen), sizeof(pathLen));
+    if (in.eof()) return false;
+
+    std::string path(pathLen, '\0');
+    in.read(&path[0], pathLen);
+
+    uint8_t typeVal;
+    in.read(reinterpret_cast<char*>(&typeVal), sizeof(typeVal));
+    FileType type = static_cast<FileType>(typeVal);
+
+    fs::path outPath = fs::u8path(outputDir) / fs::u8path(path);
+    FileMetadata metadata;
+
+    switch (type) {
+    case FileType::Regular: {
+        uint64_t fileSize;
+        in.read(reinterpret_cast<char*>(&fileSize), sizeof(fileSize));
+
+        fs::create_directories(outPath.parent_path());
+        std::ofstream out(outPath, std::ios::binary);
+        if (!out.is_open()) {
+            throw std::runtime_error("Cannot create file: " + outPath.string());
+        }
+
+        // Stream content in chunks
+        if (fileSize > 0) {
+            char buffer[STREAM_CHUNK];
+            uint64_t remaining = fileSize;
+            while (remaining > 0) {
+                size_t toRead = std::min<size_t>(remaining, STREAM_CHUNK);
+                in.read(buffer, static_cast<std::streamsize>(toRead));
+                size_t read = static_cast<size_t>(in.gcount());
+                if (read > 0) {
+                    out.write(buffer, static_cast<std::streamsize>(read));
+                    remaining -= read;
+                } else {
+                    break;
+                }
+            }
+        }
+        out.close();
+        break;
+    }
+    case FileType::Directory: {
+        fs::create_directories(outPath);
+        break;
+    }
+    case FileType::Symlink: {
+        uint32_t targetLen;
+        in.read(reinterpret_cast<char*>(&targetLen), sizeof(targetLen));
+        std::string target(targetLen, '\0');
+        in.read(&target[0], targetLen);
+        fs::create_directories(outPath.parent_path());
+        std::error_code ec;
+        fs::remove(outPath, ec);
+        fs::create_symlink(target, outPath, ec);
+        break;
+    }
+    case FileType::HardLink: {
+        uint64_t fileSize;
+        in.read(reinterpret_cast<char*>(&fileSize), sizeof(fileSize));
+        fs::create_directories(outPath.parent_path());
+        std::ofstream out(outPath, std::ios::binary);
+        if (fileSize > 0) {
+            char buffer[STREAM_CHUNK];
+            uint64_t remaining = fileSize;
+            while (remaining > 0) {
+                size_t toRead = std::min<size_t>(remaining, STREAM_CHUNK);
+                in.read(buffer, static_cast<std::streamsize>(toRead));
+                size_t read = static_cast<size_t>(in.gcount());
+                if (read > 0) {
+                    out.write(buffer, static_cast<std::streamsize>(read));
+                    remaining -= read;
+                } else {
+                    break;
+                }
+            }
+        }
+        out.close();
+        uint64_t hId;
+        in.read(reinterpret_cast<char*>(&hId), sizeof(hId));
+        break;
+    }
+    case FileType::Fifo: {
+        fs::create_directories(outPath.parent_path());
+        #ifdef _WIN32
+        std::ofstream out(outPath, std::ios::binary);
+        out.close();
+        #endif
+        break;
+    }
+    case FileType::Device: {
+        uint32_t major, minor;
+        in.read(reinterpret_cast<char*>(&major), sizeof(major));
+        in.read(reinterpret_cast<char*>(&minor), sizeof(minor));
+        break;
+    }
+    }
+
+    // Read metadata (v3+)
+    if (version >= 3) {
+        readMetadata(in, metadata);
+        // Restore metadata
+        if (!metadata.isEmpty()) {
+            HANDLE hFile = CreateFileW(outPath.c_str(), FILE_WRITE_ATTRIBUTES,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                       nullptr, OPEN_EXISTING, 0, nullptr);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                FILETIME ct, at, wt;
+                ct.dwLowDateTime  = static_cast<DWORD>(metadata.createTime & 0xFFFFFFFF);
+                ct.dwHighDateTime = static_cast<DWORD>(metadata.createTime >> 32);
+                at.dwLowDateTime  = static_cast<DWORD>(metadata.accessTime & 0xFFFFFFFF);
+                at.dwHighDateTime = static_cast<DWORD>(metadata.accessTime >> 32);
+                wt.dwLowDateTime  = static_cast<DWORD>(metadata.modTime & 0xFFFFFFFF);
+                wt.dwHighDateTime = static_cast<DWORD>(metadata.modTime >> 32);
+                SetFileTime(hFile, &ct, &at, &wt);
+                CloseHandle(hFile);
+            }
+            if (metadata.attributes != 0)
+                SetFileAttributesW(outPath.c_str(), metadata.attributes);
+        }
+    }
+
+    return true;
 }
 
 void ArchiveReader::readHeader(std::ifstream& in, uint32_t& entryCount,
@@ -63,7 +218,7 @@ void ArchiveReader::readHeader(std::ifstream& in, uint32_t& entryCount,
     in.read(reinterpret_cast<char*>(&entryCount), sizeof(entryCount));
 }
 
-FileEntry ArchiveReader::readEntryCommon(std::ifstream& in) {
+FileEntry ArchiveReader::readEntryV2(std::ifstream& in) {
     uint32_t pathLen;
     in.read(reinterpret_cast<char*>(&pathLen), sizeof(pathLen));
     std::string path(pathLen, '\0');

@@ -30,6 +30,17 @@ public:
                               const std::string& archivePath,
                               ProgressCallback progress = nullptr);
 
+    // Streaming backup: avoids loading entire files into memory
+    static size_t backupStream(const std::string& sourceDir,
+                               const std::string& archivePath,
+                               ProgressCallback progress = nullptr,
+                               const BackupFilter& filter = BackupFilter{});
+
+    // Streaming restore: avoids loading entire files into memory
+    static size_t restoreStream(const std::string& archivePath,
+                                const std::string& restoreDir,
+                                ProgressCallback progress = nullptr);
+
     static size_t restore(const std::string& archivePath,
                           const std::string& restoreDir,
                           ProgressCallback progress = nullptr);

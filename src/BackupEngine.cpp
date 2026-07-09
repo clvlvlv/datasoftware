@@ -14,6 +14,16 @@ namespace fs = std::filesystem;
 
 namespace datasoftware {
 
+// Helper: convert filesystem path to UTF-8 std::string
+static std::string pathToUtf8(const std::filesystem::path& p) {
+    auto u8 = p.u8string();
+    #if defined(__cpp_lib_char8_t) || (defined(_MSC_VER) && _MSVC_LANG >= 202002)
+    return std::string(reinterpret_cast<const char*>(u8.c_str()), u8.size());
+    #else
+    return u8;
+    #endif
+}
+
 size_t BackupEngine::backup(const std::string& sourceDir,
                             const std::string& archivePath,
                             ProgressCallback progress) {
@@ -52,15 +62,16 @@ size_t BackupEngine::backupFiles(const std::vector<std::string>& filePaths,
 
     for (size_t i = 0; i < total; ++i) {
         const auto& fullPath = filePaths[i];
-        fs::path p(fullPath);
-        std::string fileName = p.filename().string();
+        fs::path p = fs::u8path(fullPath);
+        std::string fileName;
+        try { fileName = pathToUtf8(p.filename()); } catch (...) { fileName = p.filename().string(); }
 
         if (progress) progress(i, total, fileName);
 
-        uint64_t size = fs::file_size(fullPath);
-        std::ifstream file(fullPath, std::ios::binary);
+        uint64_t size = fs::file_size(p);
+        std::ifstream file(p, std::ios::binary);
         if (!file.is_open()) {
-            throw std::runtime_error("Cannot open file: " + fullPath);
+            throw std::runtime_error("Cannot open file: " + fileName);
         }
         std::vector<char> buf(size);
         if (size > 0) file.read(buf.data(), size);
@@ -70,7 +81,7 @@ size_t BackupEngine::backupFiles(const std::vector<std::string>& filePaths,
 
         // Read metadata using Windows API
         WIN32_FILE_ATTRIBUTE_DATA info;
-        if (GetFileAttributesExW(fs::path(fullPath).c_str(), GetFileExInfoStandard, &info)) {
+        if (GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &info)) {
             fe.metadata.createTime = (static_cast<int64_t>(info.ftCreationTime.dwHighDateTime) << 32)
                                     | static_cast<int64_t>(info.ftCreationTime.dwLowDateTime);
             fe.metadata.modTime = (static_cast<int64_t>(info.ftLastWriteTime.dwHighDateTime) << 32)
@@ -125,6 +136,65 @@ static void restoreFileMetadata(const fs::path& filePath, const FileMetadata& md
     }
 }
 
+// ---- streaming backup (avoids loading files into memory) ----
+size_t BackupEngine::backupStream(const std::string& sourceDir,
+                                   const std::string& archivePath,
+                                   ProgressCallback progress,
+                                   const BackupFilter& filter) {
+    // List files without reading content
+    auto files = FileTraverser::listFiles(sourceDir, progress, filter);
+    size_t total = files.size();
+    if (progress) progress(0, total, "Writing archive...");
+
+    // Open archive and write header
+    std::ofstream out(archivePath, std::ios::binary);
+    if (!out.is_open())
+        throw std::runtime_error("Cannot create archive: " + archivePath);
+
+    ArchiveWriter::writeHeader(out, static_cast<uint32_t>(total));
+
+    // Write each file directly from disk
+    for (size_t i = 0; i < total; ++i) {
+        const auto& fi = files[i];
+        if (progress) progress(i, total, fi.relativePath);
+
+        fs::path fullPath = fs::u8path(sourceDir) / fs::u8path(fi.relativePath);
+        ArchiveWriter::writeEntryStream(out, fullPath.string(),
+                                         fi.relativePath, fi.metadata);
+    }
+
+    out.close();
+    if (progress) progress(total, total, "Backup complete!");
+    return total;
+}
+
+// ---- streaming restore (avoids loading files into memory) ----
+size_t BackupEngine::restoreStream(const std::string& archivePath,
+                                    const std::string& restoreDir,
+                                    ProgressCallback progress) {
+    std::ifstream in(archivePath, std::ios::binary);
+    if (!in.is_open())
+        throw std::runtime_error("Cannot open archive: " + archivePath);
+
+    uint32_t entryCount = 0;
+    uint32_t version = 0;
+    ArchiveReader::readHeader(in, entryCount, version);
+
+    if (progress) progress(0, entryCount, "Restoring...");
+
+    fs::path restorePath(restoreDir);
+    fs::create_directories(restorePath);
+
+    for (uint32_t i = 0; i < entryCount; ++i) {
+        if (progress) progress(i, entryCount, "");
+        ArchiveReader::extractNext(in, restoreDir, version);
+    }
+
+    in.close();
+    if (progress) progress(entryCount, entryCount, "Restore complete!");
+    return entryCount;
+}
+
 size_t BackupEngine::restore(const std::string& archivePath,
                              const std::string& restoreDir,
                              ProgressCallback progress) {
@@ -145,14 +215,14 @@ size_t BackupEngine::restore(const std::string& archivePath,
     size_t restoredCount = 0;
     for (const auto& entry : entries) {
         if (entry.fileType == FileType::Directory) {
-            fs::path filePath = restorePath / entry.relativePath;
+            fs::path filePath = restorePath / fs::u8path(entry.relativePath);
             fs::create_directories(filePath);
             continue;
         }
 
         if (progress) progress(restoredCount, total, entry.relativePath);
 
-        fs::path filePath = restorePath / entry.relativePath;
+        fs::path filePath = restorePath / fs::u8path(entry.relativePath);
         fs::create_directories(filePath.parent_path());
 
         switch (entry.fileType) {
