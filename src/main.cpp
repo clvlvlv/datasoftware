@@ -13,6 +13,22 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef _WIN32
+static std::string ansiToUtf8(const char* s) {
+    if (!s || !*s) return {};
+    int wn = MultiByteToWideChar(CP_ACP, 0, s, -1, nullptr, 0);
+    if (wn <= 0) return s;
+    std::wstring ws(static_cast<size_t>(wn), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, s, -1, &ws[0], wn);
+    int un = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (un <= 0) return s;
+    std::string u(static_cast<size_t>(un), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, &u[0], un, nullptr, nullptr);
+    if (!u.empty() && u.back() == '\0') u.pop_back();
+    return u;
+}
+#endif
+
 
 void printUsage(const char* progName) {
     std::cerr << "Usage:" << std::endl;
@@ -58,10 +74,10 @@ static auto makeProgressCallback(const std::string& actionName) {
 }
 
 int doPack(int argc, char* argv[]) {
-    std::string archivePath = argv[argc - 1];
+    std::string archivePath = ansiToUtf8(argv[argc - 1]);
     std::vector<std::string> files;
     for (int i = 2; i < argc - 1; ++i)
-        files.push_back(argv[i]);
+        files.push_back(ansiToUtf8(argv[i]));
 
     auto start = std::chrono::steady_clock::now();
 
@@ -69,10 +85,10 @@ int doPack(int argc, char* argv[]) {
     size_t total = files.size();
     for (size_t idx = 0; idx < total; ++idx) {
         const auto& path = files[idx];
-        std::string name = std::filesystem::path(path).filename().string();
+        std::string name = std::filesystem::u8path(path).filename().u8string();
         std::cout << "[PROGRESS] " << idx << " " << total << " " << name << std::endl;
 
-        std::ifstream in(path, std::ios::binary | std::ios::ate);
+        std::ifstream in(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
         if (!in.is_open()) {
             std::cout << "[DONE] ERR Cannot open file: " << path << std::endl;
             return 1;
@@ -85,7 +101,7 @@ int doPack(int argc, char* argv[]) {
         datasoftware::FileEntry fe(name, static_cast<uint64_t>(sz), std::move(buf));
 
         WIN32_FILE_ATTRIBUTE_DATA info;
-        if (GetFileAttributesExW(std::filesystem::path(path).c_str(),
+        if (GetFileAttributesExW(std::filesystem::u8path(path).c_str(),
                                  GetFileExInfoStandard, &info)) {
             fe.metadata.createTime = (static_cast<int64_t>(info.ftCreationTime.dwHighDateTime) << 32)
                                     | info.ftCreationTime.dwLowDateTime;
@@ -180,7 +196,7 @@ int main(int argc, char* argv[]) {
             if (argc != 4) { printUsage(argv[0]); return 1; }
             auto start = std::chrono::steady_clock::now();
             std::cout << "Backing up: " << argv[2] << " -> " << argv[3] << std::endl;
-            size_t count = datasoftware::BackupEngine::backup(argv[2], argv[3],
+            size_t count = datasoftware::BackupEngine::backup(ansiToUtf8(argv[2]), ansiToUtf8(argv[3]),
                 makeProgressCallback("backup"));
             auto end = std::chrono::steady_clock::now();
             double elapsed = std::chrono::duration<double>(end - start).count();
@@ -191,7 +207,7 @@ int main(int argc, char* argv[]) {
             if (argc != 4) { printUsage(argv[0]); return 1; }
             auto start = std::chrono::steady_clock::now();
             std::cout << "Restoring: " << argv[2] << " -> " << argv[3] << std::endl;
-            size_t count = datasoftware::BackupEngine::restore(argv[2], argv[3],
+            size_t count = datasoftware::BackupEngine::restore(ansiToUtf8(argv[2]), ansiToUtf8(argv[3]),
                 makeProgressCallback("restore"));
             auto end = std::chrono::steady_clock::now();
             double elapsed = std::chrono::duration<double>(end - start).count();
@@ -204,12 +220,12 @@ int main(int argc, char* argv[]) {
 
         } else if (command == "unpack" || command == "u") {
             if (argc != 4) { printUsage(argv[0]); return 1; }
-            return doUnpack(argv[2], argv[3]);
+            return doUnpack(ansiToUtf8(argv[2]), ansiToUtf8(argv[3]));
 
         } else if (command == "compress" || command == "c") {
             if (argc != 5) { printUsage(argv[0]); return 1; }
-            std::string inputPath = argv[2];
-            std::string outputPath = argv[3];
+            std::string inputPath = ansiToUtf8(argv[2]);
+            std::string outputPath = ansiToUtf8(argv[3]);
             int algoIdx = std::stoi(argv[4]);
             auto algo = static_cast<datasoftware::CompressAlgo>(algoIdx);
             auto start = std::chrono::steady_clock::now();
@@ -219,8 +235,8 @@ int main(int argc, char* argv[]) {
             auto end = std::chrono::steady_clock::now();
             double elapsed = std::chrono::duration<double>(end - start).count();
 
-            auto inSize = std::filesystem::file_size(inputPath);
-            auto outSize = std::filesystem::file_size(outputPath);
+            auto inSize = std::filesystem::file_size(std::filesystem::u8path(inputPath));
+            auto outSize = std::filesystem::file_size(std::filesystem::u8path(outputPath));
             double ratio = inSize > 0 ? (1.0 - (double)outSize / inSize) * 100.0 : 0.0;
             std::cout << "[DONE] OK Compress complete! Ratio: " << std::fixed
                       << std::setprecision(1) << ratio << "% ("
@@ -228,8 +244,8 @@ int main(int argc, char* argv[]) {
 
         } else if (command == "decompress" || command == "d") {
             if (argc != 5) { printUsage(argv[0]); return 1; }
-            std::string inputPath = argv[2];
-            std::string outputPath = argv[3];
+            std::string inputPath = ansiToUtf8(argv[2]);
+            std::string outputPath = ansiToUtf8(argv[3]);
             int algoIdx = std::stoi(argv[4]);
             auto algo = static_cast<datasoftware::CompressAlgo>(algoIdx);
             auto start = std::chrono::steady_clock::now();
@@ -243,8 +259,8 @@ int main(int argc, char* argv[]) {
 
         } else if (command == "encrypt" || command == "e") {
             if (argc != 5) { printUsage(argv[0]); return 1; }
-            std::string inputPath = argv[2];
-            std::string outputPath = argv[3];
+            std::string inputPath = ansiToUtf8(argv[2]);
+            std::string outputPath = ansiToUtf8(argv[3]);
             std::string password = argv[4];
             auto start = std::chrono::steady_clock::now();
             std::cout << "Encrypting: " << inputPath << " -> " << outputPath << std::endl;
@@ -256,8 +272,8 @@ int main(int argc, char* argv[]) {
 
         } else if (command == "decrypt") {
             if (argc != 5) { printUsage(argv[0]); return 1; }
-            std::string inputPath = argv[2];
-            std::string outputPath = argv[3];
+            std::string inputPath = ansiToUtf8(argv[2]);
+            std::string outputPath = ansiToUtf8(argv[3]);
             std::string password = argv[4];
             auto start = std::chrono::steady_clock::now();
             std::cout << "Decrypting: " << inputPath << " -> " << outputPath << std::endl;
