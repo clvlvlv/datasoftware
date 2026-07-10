@@ -476,15 +476,21 @@ class MainWindow(QMainWindow):
         total_size = 0
         if self._source_dir:
             self.source_label.setText(f"📁 目录: {self._source_dir}")
-            for i in range(5):
-                self.file_preview.add_file(f"文件_{i}.txt", "文件", 1024 * (i + 1))
-                total_size += 1024 * (i + 1)
+            for root, dirs, files in os.walk(self._source_dir):
+                    for file in files[:100]:
+                        file_path = os.path.join(root, file)
+                        if not self._should_show_file(file_path):
+                            continue
+                        rel_path = os.path.relpath(file_path, self._source_dir)
+                        size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                        self.file_preview.add_file(rel_path, self._get_file_type(file_path), size)
+                        total_size += size
         elif self._selected_files:
             self.source_label.setText(f"📄 已选择 {len(self._selected_files)} 个文件")
             for path in self._selected_files:
                 name = os.path.basename(path)
                 size = os.path.getsize(path) if os.path.exists(path) else 0
-                self.file_preview.add_file(name, "文件", size)
+                self.file_preview.add_file(name, self._get_file_type(path), size)
                 total_size += size
         else:
             self.source_label.setText("未选择任何文件")
@@ -496,6 +502,47 @@ class MainWindow(QMainWindow):
             )
         else:
             self.preview_summary.setText("")
+
+    def _get_file_type(self, file_path):
+        _, ext = os.path.splitext(file_path)
+        if ext:
+            return ext.lower()
+        return "文件"
+
+    def _get_filter_exts(self):
+        raw = self.filter_ext.text().strip()
+        if not raw:
+            return None
+        exts = []
+        for e in raw.split(","):
+            e = e.strip().lower()
+            if e and not e.startswith("."):
+                e = "." + e
+            if e:
+                exts.append(e)
+        return exts if exts else None
+
+    def _should_show_file(self, file_path):
+        filter_exts = self._get_filter_exts()
+        if filter_exts:
+            _, ext = os.path.splitext(file_path)
+            if ext.lower() not in filter_exts:
+                return False
+
+        name_filter = self.filter_name.text().strip().lower()
+        if name_filter and name_filter not in os.path.basename(file_path).lower():
+            return False
+
+        path_inc = self.filter_path_inc.text().strip().lower()
+        if path_inc and path_inc not in file_path.lower():
+            return False
+
+        path_exc = self.filter_path_exc.text().strip().lower()
+        if path_exc and path_exc in file_path.lower():
+            return False
+
+        return True
+
 
     def _format_size(self, size):
         if size >= 1024**3:
@@ -548,6 +595,17 @@ class MainWindow(QMainWindow):
         if path:
             self.restore_dir.setText(path)
 
+    def _has_active_filters(self):
+        if self.filter_ext.text().strip():
+            return True
+        if self.filter_name.text().strip():
+            return True
+        if self.filter_path_inc.text().strip():
+            return True
+        if self.filter_path_exc.text().strip():
+            return True
+        return False
+
     def _on_backup(self):
         dest = self.archive_path.text().strip()
         if not dest:
@@ -564,12 +622,30 @@ class MainWindow(QMainWindow):
         self.status_label.setText("正在备份...")
         self.backup_log.log(f"开始备份 → {dest}", "info")
 
+        source = self._source_dir or ""
+        files_to_backup = self._selected_files
+        backup_type = "files" if self._selected_files else "folder"
+
+        if source and self._has_active_filters():
+            backup_type = "files"
+            files_to_backup = []
+            try:
+                for root, dirs, files in os.walk(source):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        if self._should_show_file(file_path):
+                            files_to_backup.append(file_path)
+            except Exception as e:
+                self.backup_log.log(f"扫描目录失败: {e}", "error")
+                self.backup_btn.setEnabled(True)
+                return
+
         self.worker = BackupWorker(
-            self._source_dir or "",
+            source,
             dest,
             self.backup_password.text(),
-            "folder" if self._source_dir else "files",
-            self._selected_files
+            backup_type,
+            files_to_backup
         )
         self.worker.progress.connect(self._on_backup_progress)
         self.worker.log_message.connect(self.backup_log.log)
