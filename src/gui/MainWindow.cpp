@@ -610,10 +610,17 @@ void MainWindow::refreshFilePreview() {
                 ? FileTraverser::traverse(m_sourceDir.toStdString(), nullptr, m_currentFilter)
                 : FileTraverser::traverse(m_sourceDir.toStdString());
             for (const auto& e : entries) {
-                if (e.fileType == FileType::Directory) continue;
-                auto* item = new QTreeWidgetItem();
-                item->setText(0, QString::fromStdString(e.relativePath));
-                item->setText(1, "File");
+               if (e.fileType == FileType::Directory) continue;
+               auto* item = new QTreeWidgetItem();
+               item->setText(0, QString::fromStdString(e.relativePath));
+                switch (e.fileType) {
+                case FileType::Regular:  item->setText(1, "File");     break;
+                case FileType::Symlink:  item->setText(1, "Symlink");  break;
+                case FileType::HardLink: item->setText(1, "HardLink"); break;
+                case FileType::Fifo:     item->setText(1, "FIFO");     break;
+                case FileType::Device:   item->setText(1, "Device");   break;
+                default:                 item->setText(1, "File");     break;
+                }
                 double sz = static_cast<double>(e.fileSize);
                 item->setText(2, sz >= 1048576.0 ? QString("%1 MB").arg(sz/1048576.0,0,'f',2)
                              : sz >= 1024.0 ? QString("%1 KB").arg(sz/1024.0,0,'f',1)

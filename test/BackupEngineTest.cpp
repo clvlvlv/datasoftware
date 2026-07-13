@@ -168,9 +168,9 @@ void testBackupAndRestore() {
         size_t restored = BackupEngine::restore(archivePath, restoreDir);
         assert(restored == 3);
 
-        assert(fileContentEquals(restoreDir + "/doc.txt", "document content"));
-        assert(fileContentEquals(restoreDir + "/images/pic.dat", std::string(100, 'A')));
-        assert(fileContentEquals(restoreDir + "/config/settings.ini", "[config]\nkey=value\n"));
+        assert(fileContentEquals(restoreDir + "/source/doc.txt", "document content"));
+        assert(fileContentEquals(restoreDir + "/source/images/pic.dat", std::string(100, 'A')));
+        assert(fileContentEquals(restoreDir + "/source/config/settings.ini", "[config]\nkey=value\n"));
     END_TEST("Full backup and restore flow");
 }
 
@@ -278,6 +278,73 @@ void testHardLinkRoundTrip() {
     END_TEST("Hard link file type round-trip");
 }
 
+void testBackupRestoreHardlink() {
+    // Check if hard links are supported on this system
+    std::error_code probeEc;
+    fs::path probeSrc = testDir + "/_probe_hl_src.txt";
+    fs::path probeDst = testDir + "/_probe_hl_dst.txt";
+    { std::ofstream o(probeSrc); o << "x"; }
+    fs::create_hard_link(probeSrc, probeDst, probeEc);
+    bool hardlinksOk = !probeEc;
+    fs::remove(probeSrc, probeEc);
+    fs::remove(probeDst, probeEc);
+
+    if (!hardlinksOk) {
+        TEST("Backup/restore hard link (SKIPPED - not supported)")
+            FileEntry hlink("linked.txt", FileType::HardLink, 5,
+                           std::vector<char>{'h','e','l','l','o'}, "", 42);
+            ArchiveWriter::write(archivePath, {hlink});
+            auto loaded = ArchiveReader::read(archivePath);
+            assert(loaded.size() == 1);
+            assert(loaded[0].fileType == FileType::HardLink);
+            assert(loaded[0].hardLinkId == 42);
+            std::cout << "(format verified)";
+            passed++;
+        END_TEST("Backup/restore hard link");
+        return;
+    }
+
+    TEST("Backup and restore with hard link")
+        createFile(srcDir + "/original.txt", "shared content for hard link test");
+
+        // Create a hard link — both paths point to the same file data on disk
+        std::error_code ec;
+        fs::create_hard_link(
+            srcDir + "/original.txt",
+            srcDir + "/hardlink_to_original.txt",
+            ec
+        );
+        assert(!ec);
+
+        // Verify both files have identical size (same underlying file)
+        assert(fs::file_size(srcDir + "/original.txt") ==
+               fs::file_size(srcDir + "/hardlink_to_original.txt"));
+
+        // Full backup
+        size_t backedUp = BackupEngine::backup(srcDir, archivePath);
+        std::cout << "(" << backedUp << " entries in archive) ";
+
+        // Debug: check what's in the archive
+        auto debugEntries = ArchiveReader::read(archivePath);
+        for (const auto& de : debugEntries) {
+            std::cout << "[" << de.relativePath
+                      << " type=" << (int)de.fileType
+                      << " size=" << de.fileSize << "] ";
+        }
+
+        // Restore
+        std::string restoreSub = restoreDir + "/_out";
+        size_t restored = BackupEngine::restore(archivePath, restoreSub);
+        assert(restored == backedUp);
+
+        // Both restored files should exist and have correct content
+        assert(fileContentEquals(restoreSub + "/source/original.txt",
+                                 "shared content for hard link test"));
+        assert(fileContentEquals(restoreSub + "/source/hardlink_to_original.txt",
+                                 "shared content for hard link test"));
+    END_TEST("Backup and restore with hard link");
+}
+
 void testBackwardCompatV1() {
     TEST("Backward compatibility with v1 archive")
         // Build a v1-format archive manually
@@ -366,7 +433,7 @@ void testBackupRestoreSymlink() {
         size_t restored = BackupEngine::restore(archivePath, restoreSub);
         assert(restored == backedUp);
 
-        assert(fileContentEquals(restoreSub + "/real_file.txt",
+        assert(fileContentEquals(restoreSub + "/source/real_file.txt",
                                  "symlink content"));
     END_TEST("Backup and restore with symlink");
 }
@@ -558,7 +625,8 @@ void testMetadataRoundTrip() {
         std::string testFile = testDir + "/metadata_test.txt";
         std::string archiveFile = testDir + "/meta_archive.dat";
         std::string restoreDirPath = testDir + "/restored";
-        std::string restoreFile = testDir + "/restored/metadata_test.txt";
+        std::string rootName = fs::path(testDir).filename().string();
+        std::string restoreFile = restoreDirPath + "/" + rootName + "/metadata_test.txt";
 
         { std::ofstream out(testFile); out << "hello"; }
 
@@ -610,7 +678,8 @@ void testMetadataTimestamp() {
         fs::remove_all(restoredDir);
         BackupEngine::restore(archiveFile, restoredDir);
 
-        std::string restoredFile = restoredDir + "/time_test.txt";
+        std::string rootName = fs::path(testDir).filename().string();
+        std::string restoredFile = restoredDir + "/" + rootName + "/time_test.txt";
         assert(fs::exists(restoredFile));
 
         // Check content preserved
@@ -836,7 +905,7 @@ void testLargeFile() {
         BackupEngine::backup(srcDir, archivePath);
         BackupEngine::restore(archivePath, restoreDir);
         
-        std::string restoredFile = restoreDir + "/large.bin";
+        std::string restoredFile = restoreDir + "/source/large.bin";
         assert(fs::exists(restoredFile));
         assert(fs::file_size(restoredFile) == data.size());
         
@@ -1049,8 +1118,8 @@ void testEncryptedBackup() {
         fs::remove_all(restoreDir);
         BackupEngine::restore(tempDecrypted, restoreDir);
         
-        assert(fileContentEquals(restoreDir + "/secret.txt", "This is secret data"));
-        assert(fileContentEquals(restoreDir + "/public.txt", "This is public data"));
+        assert(fileContentEquals(restoreDir + "/source/secret.txt", "This is secret data"));
+        assert(fileContentEquals(restoreDir + "/source/public.txt", "This is public data"));
         
         // 清理临时文件
         fs::remove(tempDecrypted);
@@ -1153,7 +1222,7 @@ void testMetadataAttributes() {
         fs::remove_all(restoreDir);
         BackupEngine::restore(archivePath, restoreDir);
         
-        std::string restoredPath = restoreDir + "/attrs.txt";
+        std::string restoredPath = restoreDir + "/source/attrs.txt";
         
         // 检查属性是否保留
         WIN32_FILE_ATTRIBUTE_DATA info;
@@ -1194,6 +1263,7 @@ int main() {
     setup(); testHardLinkRoundTrip();
     setup(); testBackwardCompatV1();
     setup(); testBackupRestoreSymlink();
+    setup(); testBackupRestoreHardlink();
 
     // ===== 过滤器测试 =====
     std::cout << std::endl << "--- BackupFilter Tests ---" << std::endl;

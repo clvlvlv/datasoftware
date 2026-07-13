@@ -5,11 +5,20 @@
 import os
 import re
 import subprocess
+import sys
 from PyQt5.QtCore import QThread, pyqtSignal
 
 
 def find_executable():
     """查找 C++ dsbackup 可执行文件"""
+    try:
+        base = sys._MEIPASS
+        exe_path = os.path.join(base, "dsbackup.exe")
+        if os.path.isfile(exe_path):
+            return exe_path
+    except AttributeError:
+        pass
+
     exe = os.environ.get("DATASOFTWARE_EXE")
     if exe and os.path.isfile(exe):
         return exe
