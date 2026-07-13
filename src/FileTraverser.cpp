@@ -11,6 +11,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <aclapi.h>
 
 namespace fs = std::filesystem;
 
@@ -43,12 +44,52 @@ FileMetadata FileTraverser::readFileMetadata(const fs::path& fullPath) {
         md.attributes = info.dwFileAttributes;
     }
 
+    // Populate owner using Windows API
+    PSECURITY_DESCRIPTOR pSD = nullptr;
+    std::wstring wpath = fullPath.wstring();
+    if (GetNamedSecurityInfoW(&wpath[0], SE_FILE_OBJECT,
+                              OWNER_SECURITY_INFORMATION, nullptr, nullptr,
+                              nullptr, nullptr, &pSD) == ERROR_SUCCESS && pSD) {
+        PSID pOwner = nullptr;
+        BOOL ownerDefaulted = FALSE;
+        if (GetSecurityDescriptorOwner(pSD, &pOwner, &ownerDefaulted) && pOwner) {
+            wchar_t ownerName[256], domainName[256];
+            DWORD ownerLen = 256, domainLen = 256;
+            SID_NAME_USE peUse;
+            if (LookupAccountSidW(nullptr, pOwner, ownerName, &ownerLen,
+                                  domainName, &domainLen, &peUse)) {
+                std::wstring ws(ownerName);
+                md.owner = std::string(ws.begin(), ws.end());
+            }
+        }
+        LocalFree(pSD);
+    }
+
     return md;
 }
 
 // ---- attach metadata to a FileEntry ----
 void FileTraverser::attachMetadata(FileEntry& fe, const fs::path& fullPath) {
     fe.metadata = readFileMetadata(fullPath);
+}
+
+// ---- hard link detection using Windows API ----
+static bool getHardLinkInfo(const std::filesystem::path& path, uint64_t& fileIndex) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    BY_HANDLE_FILE_INFORMATION info;
+    bool ok = GetFileInformationByHandle(h, &info);
+    CloseHandle(h);
+
+    if (ok && info.nNumberOfLinks > 1) {
+        fileIndex = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+        return true;
+    }
+    return false;
 }
 
 // ---- helper: count files (fast) ----
@@ -151,9 +192,21 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
                 }
             }
 
-            if (progress) progress(processed, total, relStr);
-            fe = readFile(base.string(), relStr);
-            attachMetadata(fe, entry.path());
+            // Hard link detection (Windows)
+            {
+                uint64_t fileIndex = 0;
+                if (getHardLinkInfo(entry.path(), fileIndex)) {
+                    if (progress) progress(processed, total, relStr);
+                    fe = readFile(base.string(), relStr);
+                    fe.fileType = FileType::HardLink;
+                    fe.hardLinkId = fileIndex;
+                    attachMetadata(fe, entry.path());
+                } else {
+                    if (progress) progress(processed, total, relStr);
+                    fe = readFile(base.string(), relStr);
+                    attachMetadata(fe, entry.path());
+                }
+            }
             ++processed;
         }
         else if (fs::is_fifo(status)) {
@@ -282,6 +335,16 @@ std::vector<FileTraverser::FileInfo> FileTraverser::listFiles(
             fi.fileType = FileType::Regular;
             fi.fileSize = fs::file_size(entry.path());
             fi.metadata = readFileMetadata(entry.path());
+
+            // Hard link detection (Windows)
+            {
+                uint64_t fileIndex = 0;
+                if (getHardLinkInfo(entry.path(), fileIndex)) {
+                    fi.fileType = FileType::HardLink;
+                    fi.hardLinkId = fileIndex;
+                }
+            }
+
             files.push_back(std::move(fi));
             ++processed;
         }

@@ -1,9 +1,10 @@
-"""
+﻿"""
 主窗口模块
 """
 
 import os
 import time
+import ctypes
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QTabWidget, QGroupBox, QLabel, QLineEdit, QPushButton,
@@ -119,10 +120,16 @@ class MainWindow(QMainWindow):
         filter_group = QGroupBox("🔍 过滤器")
         filter_outer = QVBoxLayout(filter_group)
 
+        filter_btn_row = QHBoxLayout()
         filter_toggle_btn = ModernButton("⚙️ 展开/收起过滤器")
         filter_toggle_btn.setCheckable(True)
         filter_toggle_btn.clicked.connect(self._on_toggle_filters)
-        filter_outer.addWidget(filter_toggle_btn)
+        filter_btn_row.addWidget(filter_toggle_btn)
+        clear_filter_btn = ModernButton("🗑️ 清空过滤器", danger=True)
+        clear_filter_btn.clicked.connect(self._on_clear_filters)
+        filter_btn_row.addWidget(clear_filter_btn)
+        filter_btn_row.addStretch()
+        filter_outer.addLayout(filter_btn_row)
 
         self.filter_panel = QWidget()
         filter_layout = QFormLayout(self.filter_panel)
@@ -145,16 +152,17 @@ class MainWindow(QMainWindow):
         size_row = QHBoxLayout()
         self.filter_min_size = QSpinBox()
         self.filter_min_size.setRange(0, 99999999)
-        self.filter_min_size.setSuffix(" bytes")
         self.filter_min_size.setSpecialValueText("无限制")
         self.filter_max_size = QSpinBox()
         self.filter_max_size.setRange(0, 99999999)
-        self.filter_max_size.setSuffix(" bytes")
         self.filter_max_size.setSpecialValueText("无限制")
         size_row.addWidget(QLabel("最小:"))
         size_row.addWidget(self.filter_min_size)
         size_row.addWidget(QLabel("最大:"))
         size_row.addWidget(self.filter_max_size)
+        self.filter_size_unit = QComboBox()
+        self.filter_size_unit.addItems(["B", "KB", "MB"])
+        size_row.addWidget(self.filter_size_unit)
         size_row.addStretch()
         filter_layout.addRow("大小:", size_row)
 
@@ -483,14 +491,14 @@ class MainWindow(QMainWindow):
                             continue
                         rel_path = os.path.relpath(file_path, self._source_dir)
                         size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-                        self.file_preview.add_file(rel_path, self._get_file_type(file_path), size)
+                        self.file_preview.add_file(rel_path, self._detect_file_type(file_path), size)
                         total_size += size
         elif self._selected_files:
             self.source_label.setText(f"📄 已选择 {len(self._selected_files)} 个文件")
             for path in self._selected_files:
                 name = os.path.basename(path)
                 size = os.path.getsize(path) if os.path.exists(path) else 0
-                self.file_preview.add_file(name, self._get_file_type(path), size)
+                self.file_preview.add_file(name, self._detect_file_type(path), size)
                 total_size += size
         else:
             self.source_label.setText("未选择任何文件")
@@ -503,11 +511,51 @@ class MainWindow(QMainWindow):
         else:
             self.preview_summary.setText("")
 
-    def _get_file_type(self, file_path):
-        _, ext = os.path.splitext(file_path)
-        if ext:
-            return ext.lower()
+    def _detect_file_type(self, file_path):
+        """检测文件的真实类型"""
+        if os.path.islink(file_path):
+            return "Symlink"
+        try:
+            INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+            kernel32 = ctypes.windll.kernel32
+            h_file = kernel32.CreateFileW(file_path, 0x80000000, 3, None, 3, 0x02000000, None)
+            if h_file != INVALID_HANDLE_VALUE:
+                info = (ctypes.c_ubyte * 52)()
+                if kernel32.GetFileInformationByHandle(h_file, ctypes.byref(info)):
+                    nlink = ctypes.c_uint32.from_buffer(info, 40).value
+                    if nlink > 1:
+                        kernel32.CloseHandle(h_file)
+                        return "HardLink"
+                kernel32.CloseHandle(h_file)
+        except Exception:
+            pass
         return "文件"
+
+
+    def _get_file_owner(self, file_path):
+        """获取文件所有者名称（Windows API）"""
+        try:
+            advapi32 = ctypes.windll.advapi32
+            psd = ctypes.c_void_p()
+            ret = advapi32.GetNamedSecurityInfoW(
+                file_path, 1, 1, ctypes.byref(psd), None, None, None
+            )
+            if ret != 0 or not psd.value:
+                return ""
+            pOwner = ctypes.c_void_p()
+            if not advapi32.GetSecurityDescriptorOwner(psd, ctypes.byref(pOwner), None):
+                return ""
+            lpName = ctypes.create_unicode_buffer(256)
+            cchName = ctypes.c_uint32(256)
+            lpDomain = ctypes.create_unicode_buffer(256)
+            cchDomain = ctypes.c_uint32(256)
+            peUse = ctypes.c_int()
+            if advapi32.LookupAccountSidW(None, pOwner, lpName, ctypes.byref(cchName),
+                                           lpDomain, ctypes.byref(cchDomain), ctypes.byref(peUse)):
+                return lpName.value
+        except Exception:
+            pass
+        return ""
 
     def _get_filter_exts(self):
         raw = self.filter_ext.text().strip()
@@ -541,6 +589,29 @@ class MainWindow(QMainWindow):
         if path_exc and path_exc in file_path.lower():
             return False
 
+        # 大小过滤
+        min_val = self.filter_min_size.value()
+        max_val = self.filter_max_size.value()
+        if min_val > 0 or max_val > 0:
+            try:
+                size = os.path.getsize(file_path)
+                idx = self.filter_size_unit.currentIndex()
+                mult = [1, 1024, 1024 * 1024][idx]
+                size_in_unit = size / mult
+                if min_val > 0 and size_in_unit < min_val:
+                    return False
+                if max_val > 0 and size_in_unit > max_val:
+                    return False
+            except OSError:
+                pass
+
+        # 用户名过滤
+        user_filter = self.filter_user.text().strip().lower()
+        if user_filter:
+            owner = self._get_file_owner(file_path).lower()
+            if user_filter not in owner:
+                return False
+
         return True
 
 
@@ -566,6 +637,16 @@ class MainWindow(QMainWindow):
             filters.append(f"包含路径: {self.filter_path_inc.text()}")
         if self.filter_path_exc.text().strip():
             filters.append(f"排除路径: {self.filter_path_exc.text()}")
+        if self.filter_min_size.value() > 0 or self.filter_max_size.value() > 0:
+            unit = self.filter_size_unit.currentText()
+            min_s = self.filter_min_size.value()
+            max_s = self.filter_max_size.value()
+            parts = []
+            if min_s > 0: parts.append(f"最小 {min_s}{unit}")
+            if max_s > 0: parts.append(f"最大 {max_s}{unit}")
+            filters.append("大小: " + " ".join(parts))
+        if self.filter_user.text().strip():
+            filters.append(f"用户: {self.filter_user.text()}")
 
         if filters:
             self.filter_label.setText(" | ".join(filters))
@@ -573,6 +654,21 @@ class MainWindow(QMainWindow):
         else:
             self.filter_label.setText("未设置过滤器")
 
+        self._refresh_preview()
+
+
+    def _on_clear_filters(self):
+        """清空所有过滤条件"""
+        self.filter_ext.clear()
+        self.filter_name.clear()
+        self.filter_path_inc.clear()
+        self.filter_path_exc.clear()
+        self.filter_min_size.setValue(0)
+        self.filter_max_size.setValue(0)
+        self.filter_user.clear()
+        self.filter_label.setText("未设置过滤器")
+        self.filter_panel.setVisible(False)
+        self.backup_log.log("已清空所有过滤器", "warning")
         self._refresh_preview()
 
     def _on_browse_archive(self):
@@ -603,6 +699,10 @@ class MainWindow(QMainWindow):
         if self.filter_path_inc.text().strip():
             return True
         if self.filter_path_exc.text().strip():
+            return True
+        if self.filter_min_size.value() > 0 or self.filter_max_size.value() > 0:
+            return True
+        if self.filter_user.text().strip():
             return True
         return False
 
