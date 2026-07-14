@@ -2,6 +2,8 @@
 #include "datasoftware/BackupEngine.h"
 #include "datasoftware/FileTraverser.h"
 #include "datasoftware/Crypto.h"
+#include <cstring>
+#include <filesystem>
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -98,12 +100,35 @@ void BackupWorker::run() {
 void CompressWorker::run() {
     try {
         if (m_action == Compress) {
-            Compressor::compressFile(m_input, m_output, m_algo);
+            namespace fs = std::filesystem;
+            if (fs::is_directory(fs::u8path(m_input))) {
+                std::string tmpArc = m_output + ".tmp_archive";
+                datasoftware::BackupEngine::backup(m_input, tmpArc);
+                datasoftware::Compressor::compressFile(tmpArc, m_output, m_algo);
+                fs::remove(fs::u8path(tmpArc));
+            } else {
+                datasoftware::Compressor::compressFile(m_input, m_output, m_algo);
+            }
             emit operationFinished(true, QString("Compressed: %1 -> %2")
                                    .arg(QString::fromStdString(m_input))
                                    .arg(QString::fromStdString(m_output)));
         } else {
-            Compressor::decompressFile(m_input, m_output, m_algo);
+            datasoftware::Compressor::decompressFile(m_input, m_output, m_algo);
+            {
+                std::ifstream _checkArc(m_output, std::ios::binary);
+                if (_checkArc.is_open()) {
+                    char _magic[6] = {};
+                    _checkArc.read(_magic, 6);
+                    _checkArc.close();
+                    if (std::memcmp(_magic, "DATASW", 6) == 0) {
+                        std::string _arcPath = m_output + ".tmp_arc";
+                        std::filesystem::rename(std::filesystem::u8path(m_output), std::filesystem::u8path(_arcPath));
+                        std::filesystem::create_directories(std::filesystem::u8path(m_output));
+                        datasoftware::BackupEngine::restore(_arcPath, m_output);
+                        std::filesystem::remove(std::filesystem::u8path(_arcPath));
+                    }
+                }
+            }
             emit operationFinished(true, QString("Decompressed: %1 -> %2")
                                    .arg(QString::fromStdString(m_input))
                                    .arg(QString::fromStdString(m_output)));
@@ -358,11 +383,15 @@ void MainWindow::setupUI() {
     inRow->addWidget(new QLabel("Input:"));
     m_compInputEdit = new QLineEdit();
     m_compInputEdit->setPlaceholderText("Select input file...");
-    auto* browseInBtn = new QPushButton("Browse...");
-    browseInBtn->setFixedWidth(90);
+    auto* browseInBtn = new QPushButton("File...");
+    browseInBtn->setFixedWidth(70);
     connect(browseInBtn, &QPushButton::clicked, this, &MainWindow::onBrowseCompInput);
     inRow->addWidget(m_compInputEdit);
     inRow->addWidget(browseInBtn);
+    auto* browseCompFolderBtn = new QPushButton("Folder...");
+    browseCompFolderBtn->setFixedWidth(70);
+    connect(browseCompFolderBtn, &QPushButton::clicked, this, &MainWindow::onBrowseCompFolder);
+    inRow->addWidget(browseCompFolderBtn);
     compLayout->addLayout(inRow);
 
     // Output file
@@ -415,11 +444,16 @@ void MainWindow::setupUI() {
     encInRow->addWidget(new QLabel("Input:"));
     m_encInputEdit = new QLineEdit();
     m_encInputEdit->setPlaceholderText("Select file to encrypt/decrypt...");
-    auto* browseEncInBtn = new QPushButton("Browse...");
-    browseEncInBtn->setFixedWidth(90);
+    auto* browseEncInBtn = new QPushButton("File...");
+    browseEncInBtn->setFixedWidth(70);
     connect(browseEncInBtn, &QPushButton::clicked, this, &MainWindow::onBrowseEncInput);
     encInRow->addWidget(m_encInputEdit);
     encInRow->addWidget(browseEncInBtn);
+    auto* browseEncFolderBtn = new QPushButton("Folder...");
+    browseEncFolderBtn->setFixedWidth(70);
+    connect(browseEncFolderBtn, &QPushButton::clicked, this, &MainWindow::onBrowseEncFolder);
+    encInRow->addWidget(browseEncFolderBtn);
+    encInRow->addStretch();
     encLayout->addLayout(encInRow);
 
     auto* encOutRow = new QHBoxLayout();
@@ -890,6 +924,12 @@ void MainWindow::onBrowseCompInput() {
     if (!f.isEmpty()) m_compInputEdit->setText(f);
 }
 
+void MainWindow::onBrowseCompFolder() {
+    QString d = QFileDialog::getExistingDirectory(this, "Select Input Folder",
+                                                    m_compInputEdit->text());
+    if (!d.isEmpty()) m_compInputEdit->setText(d);
+}
+
 void MainWindow::onBrowseCompOutput() {
     QString f = QFileDialog::getSaveFileName(this, "Select Output File",
                                               m_compOutputEdit->text(),
@@ -959,6 +999,12 @@ void MainWindow::onBrowseEncInput() {
     if (!f.isEmpty()) m_encInputEdit->setText(f);
 }
 
+void MainWindow::onBrowseEncFolder() {
+    QString d = QFileDialog::getExistingDirectory(this, "Select Input Folder",
+                                                    m_encInputEdit->text());
+    if (!d.isEmpty()) m_encInputEdit->setText(d);
+}
+
 void MainWindow::onBrowseEncOutput() {
     QString f = QFileDialog::getSaveFileName(this, "Select Output File",
                                               m_encOutputEdit->text(), "All Files (*)");
@@ -980,7 +1026,16 @@ void MainWindow::onEncryptFile() {
     QApplication::processEvents();
 
     try {
-        Crypto::encryptFile(in.toStdString(), out.toStdString(), pwd.toStdString());
+        namespace fs = std::filesystem;
+        std::string inStr = in.toStdString(), outStr = out.toStdString(), pwdStr = pwd.toStdString();
+        if (fs::is_directory(fs::u8path(inStr))) {
+            std::string tmpArc = outStr + ".tmp_archive";
+            datasoftware::BackupEngine::backup(inStr, tmpArc);
+            datasoftware::Crypto::encryptFile(tmpArc, outStr, pwdStr);
+            fs::remove(fs::u8path(tmpArc));
+        } else {
+            datasoftware::Crypto::encryptFile(inStr, outStr, pwdStr);
+        }
         setInputsEnabled(true);
         m_encProgress->setVisible(false);
         m_encStatus->setText("Encryption complete.");
@@ -1008,11 +1063,24 @@ void MainWindow::onDecryptFile() {
     QApplication::processEvents();
 
     try {
-        Crypto::decryptFile(in.toStdString(), out.toStdString(), pwd.toStdString());
+        std::string inStr = in.toStdString(), outStr = out.toStdString(), pwdStr = pwd.toStdString();
+        datasoftware::Crypto::decryptFile(inStr, outStr, pwdStr);
+        {
+            std::ifstream _checkArc(outStr, std::ios::binary);
+            if (_checkArc.is_open()) {
+                char _magic[6] = {};
+                _checkArc.read(_magic, 6);
+                _checkArc.close();
+                if (std::memcmp(_magic, "DATASW", 6) == 0) {
+                    std::string _arcPath = outStr + ".tmp_arc";
+                    std::filesystem::rename(std::filesystem::u8path(outStr), std::filesystem::u8path(_arcPath));
+                    std::filesystem::create_directories(std::filesystem::u8path(outStr));
+                    datasoftware::BackupEngine::restore(_arcPath, outStr);
+                    std::filesystem::remove(std::filesystem::u8path(_arcPath));
+                }
+            }
+        }
         setInputsEnabled(true);
-        m_encProgress->setVisible(false);
-        m_encStatus->setText("Decryption complete.");
-        QMessageBox::information(this, "Success", "File decrypted successfully.");
     } catch (const std::exception& e) {
         setInputsEnabled(true);
         m_encProgress->setVisible(false);

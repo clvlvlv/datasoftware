@@ -9,6 +9,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <aclapi.h>
 
 namespace fs = std::filesystem;
 
@@ -112,6 +113,26 @@ size_t BackupEngine::backupFiles(const std::vector<std::string>& filePaths,
 }
 
 // ---- restore file metadata using Windows API ----
+
+// ---- enable SE_RESTORE_NAME privilege for owner restoration ----
+static bool enableRestorePrivilege() {
+    HANDLE hToken = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &hToken))
+        return false;
+    TOKEN_PRIVILEGES tp;
+    tp.PrivilegeCount = 2;
+    if (!LookupPrivilegeValueW(nullptr,
+                             L"SeTakeOwnershipPrivilege", &tp.Privileges[1].Luid)) { tp.Privileges[1].Luid.LowPart = 0; }
+    if (!LookupPrivilegeValueW(nullptr, L"SeRestorePrivilege", &tp.Privileges[0].Luid)) {
+        CloseHandle(hToken); return false;
+    }
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    tp.Privileges[1].Attributes = SE_PRIVILEGE_ENABLED;
+    bool ok = AdjustTokenPrivileges(hToken, FALSE, &tp, 0, nullptr, nullptr);
+    CloseHandle(hToken);
+    return ok && GetLastError() == ERROR_SUCCESS;
+}
+
 static void restoreFileMetadata(const fs::path& filePath, const FileMetadata& md) {
     if (md.isEmpty()) return;
 
@@ -121,7 +142,7 @@ static void restoreFileMetadata(const fs::path& filePath, const FileMetadata& md
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr,
         OPEN_EXISTING,
-        0,  // No special flags required for regular files
+        FILE_FLAG_BACKUP_SEMANTICS,  // Support both files and directories
         nullptr);
 
     if (hFile == INVALID_HANDLE_VALUE) return;
@@ -143,6 +164,24 @@ static void restoreFileMetadata(const fs::path& filePath, const FileMetadata& md
     // Restore file attributes
     if (md.attributes != 0) {
         SetFileAttributesW(filePath.c_str(), md.attributes);
+    }
+
+    // Restore file owner (may fail without admin privilege)
+    if (!md.owner.empty()) {
+        std::wstring wOwner(md.owner.begin(), md.owner.end());
+        BYTE sidBuf[SECURITY_MAX_SID_SIZE];
+        DWORD sidLen = SECURITY_MAX_SID_SIZE;
+        wchar_t domain[256];
+        DWORD domainLen = 256;
+        SID_NAME_USE peUse;
+        if (LookupAccountNameW(nullptr, wOwner.c_str(), (PSID)sidBuf, &sidLen,
+                               domain, &domainLen, &peUse)) {
+            std::wstring wPath = filePath.wstring();
+            enableRestorePrivilege();
+            SetNamedSecurityInfoW(&wPath[0], SE_FILE_OBJECT,
+                                  OWNER_SECURITY_INFORMATION,
+                                  (PSID)sidBuf, nullptr, nullptr, nullptr);
+        }
     }
 }
 
@@ -227,6 +266,7 @@ size_t BackupEngine::restore(const std::string& archivePath,
         if (entry.fileType == FileType::Directory) {
             fs::path filePath = restorePath / fs::u8path(entry.relativePath);
             fs::create_directories(filePath);
+            restoreFileMetadata(filePath, entry.metadata);
             continue;
         }
 

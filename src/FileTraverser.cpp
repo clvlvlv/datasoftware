@@ -144,6 +144,7 @@ std::vector<FileEntry> FileTraverser::traverse(const std::string& sourceDir,
         if (fs::is_directory(status)) {
             if (addedDirs.find(relStr) == addedDirs.end()) {
                 FileEntry dirEntry(relStr, FileType::Directory, 0, std::vector<char>{});
+                attachMetadata(dirEntry, entry.path());
                 seen[relStr] = entries.size();
                 entries.push_back(std::move(dirEntry));
                 addedDirs.insert(relStr);
@@ -285,6 +286,7 @@ std::vector<FileTraverser::FileInfo> FileTraverser::listFiles(
                 FileInfo fi;
                 fi.relativePath = relStr;
                 fi.fileType = FileType::Directory;
+                fi.metadata = readFileMetadata(entry.path());
                 files.push_back(std::move(fi));
                 addedDirs.insert(relStr);
             }

@@ -134,6 +134,7 @@ private slots:
     // Encryption (standalone)
     void onBrowseEncInput();
     void onBrowseEncOutput();
+    void onBrowseEncFolder();
     void onEncryptFile();
     void onDecryptFile();
     void onEncFinished(bool success, const QString& message);
@@ -141,6 +142,7 @@ private slots:
     // Compression
     void onBrowseCompInput();
     void onBrowseCompOutput();
+    void onBrowseCompFolder();
     void onCompress();
     void onDecompress();
     void onCompFinished(bool success, const QString& message);
