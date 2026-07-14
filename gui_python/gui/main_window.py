@@ -316,9 +316,12 @@ class MainWindow(QMainWindow):
         input_row.addWidget(QLabel("输入文件:"))
         self.comp_input = ModernLineEdit("选择要压缩的文件...")
         input_row.addWidget(self.comp_input, 1)
-        browse_input_btn = ModernButton("📂 浏览")
+        browse_input_btn = ModernButton("📄 文件")
         browse_input_btn.clicked.connect(self._on_browse_comp_input)
         input_row.addWidget(browse_input_btn)
+        browse_comp_folder_btn = ModernButton("📁 文件夹")
+        browse_comp_folder_btn.clicked.connect(self._on_browse_comp_folder)
+        input_row.addWidget(browse_comp_folder_btn)
         io_layout.addLayout(input_row)
 
         output_row = QHBoxLayout()
@@ -393,9 +396,12 @@ class MainWindow(QMainWindow):
         input_row.addWidget(QLabel("输入文件:"))
         self.enc_input = ModernLineEdit("选择要加密/解密的文件...")
         input_row.addWidget(self.enc_input, 1)
-        browse_enc_input_btn = ModernButton("📂 浏览")
+        browse_enc_input_btn = ModernButton("📄 文件")
         browse_enc_input_btn.clicked.connect(self._on_browse_enc_input)
         input_row.addWidget(browse_enc_input_btn)
+        browse_enc_folder_btn = ModernButton("📁 文件夹")
+        browse_enc_folder_btn.clicked.connect(self._on_browse_enc_folder)
+        input_row.addWidget(browse_enc_folder_btn)
         io_layout.addLayout(input_row)
 
         output_row = QHBoxLayout()
@@ -823,6 +829,11 @@ class MainWindow(QMainWindow):
         if path:
             self.comp_output.setText(path)
 
+    def _on_browse_comp_folder(self):
+        path = QFileDialog.getExistingDirectory(self, "选择要压缩的文件夹")
+        if path:
+            self.comp_input.setText(path)
+
     def _on_compress(self):
         self._do_compression("compress")
 
@@ -884,6 +895,11 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "选择输出文件")
         if path:
             self.enc_output.setText(path)
+
+    def _on_browse_enc_folder(self):
+        path = QFileDialog.getExistingDirectory(self, "选择要加密的文件夹")
+        if path:
+            self.enc_input.setText(path)
 
     def _on_encrypt(self):
         self._do_encryption("encrypt")

@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <cstring>
+#include <filesystem>
 #include "datasoftware/BackupEngine.h"
 #include "datasoftware/ArchiveWriter.h"
 #include "datasoftware/ArchiveReader.h"
@@ -231,11 +233,19 @@ int main(int argc, char* argv[]) {
             auto start = std::chrono::steady_clock::now();
             std::cout << "Compressing: " << inputPath << " -> " << outputPath
                       << " (" << datasoftware::Compressor::name(algo) << ")" << std::endl;
-            datasoftware::Compressor::compressFile(inputPath, outputPath, algo);
+            if (std::filesystem::is_directory(std::filesystem::u8path(inputPath))) {
+                std::string tmpArc = outputPath + ".tmp_archive";
+                datasoftware::BackupEngine::backup(inputPath, tmpArc);
+                datasoftware::Compressor::compressFile(tmpArc, outputPath, algo);
+                std::filesystem::remove(std::filesystem::u8path(tmpArc));
+            } else {
+                datasoftware::Compressor::compressFile(inputPath, outputPath, algo);
+            }
             auto end = std::chrono::steady_clock::now();
             double elapsed = std::chrono::duration<double>(end - start).count();
 
-            auto inSize = std::filesystem::file_size(std::filesystem::u8path(inputPath));
+            std::error_code _ec;
+            auto inSize = std::filesystem::file_size(std::filesystem::u8path(inputPath), _ec);
             auto outSize = std::filesystem::file_size(std::filesystem::u8path(outputPath));
             double ratio = inSize > 0 ? (1.0 - (double)outSize / inSize) * 100.0 : 0.0;
             std::cout << "[DONE] OK Compress complete! Ratio: " << std::fixed
@@ -252,6 +262,24 @@ int main(int argc, char* argv[]) {
             std::cout << "Decompressing: " << inputPath << " -> " << outputPath
                       << " (" << datasoftware::Compressor::name(algo) << ")" << std::endl;
             datasoftware::Compressor::decompressFile(inputPath, outputPath, algo);
+            // Check if decompressed result is a backup archive (directory was bundled)
+            {
+                std::ifstream _checkArc(std::filesystem::u8path(outputPath), std::ios::binary);
+                if (_checkArc.is_open()) {
+                    char _magic[6] = {};
+                    _checkArc.read(_magic, 6);
+                    _checkArc.close();
+                    if (std::memcmp(_magic, "DATASW", 6) == 0) {
+                        std::string _arcPath = outputPath + ".tmp_arc";
+                        std::filesystem::rename(std::filesystem::u8path(outputPath),
+                                                 std::filesystem::u8path(_arcPath));
+                        std::filesystem::create_directories(std::filesystem::u8path(outputPath));
+                        auto _count = datasoftware::BackupEngine::restore(_arcPath, outputPath);
+                        std::filesystem::remove(std::filesystem::u8path(_arcPath));
+                        std::cout << " (extracted " << _count << " files)" << std::endl;
+                    }
+                }
+            }
             auto end = std::chrono::steady_clock::now();
             double elapsed = std::chrono::duration<double>(end - start).count();
             std::cout << "[DONE] OK Decompress complete! ("
@@ -264,7 +292,14 @@ int main(int argc, char* argv[]) {
             std::string password = argv[4];
             auto start = std::chrono::steady_clock::now();
             std::cout << "Encrypting: " << inputPath << " -> " << outputPath << std::endl;
-            datasoftware::Crypto::encryptFile(inputPath, outputPath, password);
+            if (std::filesystem::is_directory(std::filesystem::u8path(inputPath))) {
+                std::string tmpArc = outputPath + ".tmp_archive";
+                datasoftware::BackupEngine::backup(inputPath, tmpArc);
+                datasoftware::Crypto::encryptFile(tmpArc, outputPath, password);
+                std::filesystem::remove(std::filesystem::u8path(tmpArc));
+            } else {
+                datasoftware::Crypto::encryptFile(inputPath, outputPath, password);
+            }
             auto end = std::chrono::steady_clock::now();
             double elapsed = std::chrono::duration<double>(end - start).count();
             std::cout << "[DONE] OK Encrypt complete! ("
@@ -278,6 +313,24 @@ int main(int argc, char* argv[]) {
             auto start = std::chrono::steady_clock::now();
             std::cout << "Decrypting: " << inputPath << " -> " << outputPath << std::endl;
             datasoftware::Crypto::decryptFile(inputPath, outputPath, password);
+            // Check if decrypted result is a backup archive (directory was bundled)
+            {
+                std::ifstream _checkArc(std::filesystem::u8path(outputPath), std::ios::binary);
+                if (_checkArc.is_open()) {
+                    char _magic[6] = {};
+                    _checkArc.read(_magic, 6);
+                    _checkArc.close();
+                    if (std::memcmp(_magic, "DATASW", 6) == 0) {
+                        std::string _arcPath = outputPath + ".tmp_arc";
+                        std::filesystem::rename(std::filesystem::u8path(outputPath),
+                                                 std::filesystem::u8path(_arcPath));
+                        std::filesystem::create_directories(std::filesystem::u8path(outputPath));
+                        auto _count = datasoftware::BackupEngine::restore(_arcPath, outputPath);
+                        std::filesystem::remove(std::filesystem::u8path(_arcPath));
+                        std::cout << " (extracted " << _count << " files)" << std::endl;
+                    }
+                }
+            }
             auto end = std::chrono::steady_clock::now();
             double elapsed = std::chrono::duration<double>(end - start).count();
             std::cout << "[DONE] OK Decrypt complete! ("
