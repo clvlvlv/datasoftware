@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
 
 from gui import MainWindow, StyleManager
 
@@ -21,6 +22,7 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     
     app = QApplication(sys.argv)
+app.setFont(QFont("Segoe UI", 9))
     app.setApplicationName("数据备份软件")
     app.setApplicationVersion("1.0.0")
     

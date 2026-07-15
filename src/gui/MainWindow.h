@@ -135,6 +135,7 @@ private slots:
     void onBrowseEncInput();
     void onBrowseEncOutput();
     void onBrowseEncFolder();
+    void onBrowseEncOutputFolder();
     void onEncryptFile();
     void onDecryptFile();
     void onEncFinished(bool success, const QString& message);
@@ -143,8 +144,14 @@ private slots:
     void onBrowseCompInput();
     void onBrowseCompOutput();
     void onBrowseCompFolder();
+    void onBrowseCompOutputFolder();
     void onCompress();
     void onDecompress();
+    void onBrowseDecompInput();
+    void onBrowseDecompOutput();
+    void onDecompressBtn();
+    void onDecompressBtnFinished(bool ok, const QString& msg);
+
     void onCompFinished(bool success, const QString& message);
 
     // Pack/Unpack
@@ -159,6 +166,7 @@ private slots:
     void onPackFinished(bool success, const QString& message);
 
 private:
+    QWidget* _setup_decompress_tab();
     void setupUI();
     void setInputsEnabled(bool enabled);
     void startBackup();
@@ -196,6 +204,11 @@ private:
     QDateTimeEdit* m_filtTimeFrom;
     QDateTimeEdit* m_filtTimeTo;
     QLineEdit*    m_filtUserEdit;
+
+    // ---- Decompress UI ----
+    QLineEdit*    m_decompInputEdit;
+    QLabel*       m_decompStatus;
+    QProgressBar* m_decompProgress;
 
     // ---- Compression UI ----
     QComboBox*    m_algoCombo;

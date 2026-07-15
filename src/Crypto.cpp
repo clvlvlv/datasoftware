@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <algorithm>
+#include <filesystem>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -302,7 +303,7 @@ std::vector<char> Crypto::decrypt(const std::vector<char>& input,
 void Crypto::encryptFile(const std::string& inputPath,
                           const std::string& outputPath,
                           const std::string& password) {
-    std::ifstream in(inputPath, std::ios::binary | std::ios::ate);
+    std::ifstream in(std::filesystem::u8path(inputPath), std::ios::binary | std::ios::ate);
     if (!in.is_open())
         throw std::runtime_error("Cannot open input file: " + inputPath);
     auto size = in.tellg();
@@ -313,7 +314,7 @@ void Crypto::encryptFile(const std::string& inputPath,
 
     auto encrypted = encrypt(buf, password);
 
-    std::ofstream out(outputPath, std::ios::binary);
+    std::ofstream out(std::filesystem::u8path(outputPath), std::ios::binary);
     if (!out.is_open())
         throw std::runtime_error("Cannot create output file: " + outputPath);
     out.write(encrypted.data(), encrypted.size());
@@ -323,7 +324,7 @@ void Crypto::encryptFile(const std::string& inputPath,
 void Crypto::decryptFile(const std::string& inputPath,
                           const std::string& outputPath,
                           const std::string& password) {
-    std::ifstream in(inputPath, std::ios::binary | std::ios::ate);
+    std::ifstream in(std::filesystem::u8path(inputPath), std::ios::binary | std::ios::ate);
     if (!in.is_open())
         throw std::runtime_error("Cannot open input file: " + inputPath);
     auto size = in.tellg();
@@ -334,7 +335,7 @@ void Crypto::decryptFile(const std::string& inputPath,
 
     auto decrypted = decrypt(buf, password);
 
-    std::ofstream out(outputPath, std::ios::binary);
+    std::ofstream out(std::filesystem::u8path(outputPath), std::ios::binary);
     if (!out.is_open())
         throw std::runtime_error("Cannot create output file: " + outputPath);
     out.write(decrypted.data(), decrypted.size());

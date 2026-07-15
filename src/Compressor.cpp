@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <algorithm>
+#include <filesystem>
 #include <queue>
 #include <vector>
 
@@ -42,7 +43,7 @@ std::vector<char> Compressor::decompress(const std::vector<char>& input,
 void Compressor::compressFile(const std::string& inputPath,
                                const std::string& outputPath,
                                CompressAlgo algo) {
-    std::ifstream in(inputPath, std::ios::binary | std::ios::ate);
+    std::ifstream in(std::filesystem::u8path(inputPath), std::ios::binary | std::ios::ate);
     if (!in.is_open())
         throw std::runtime_error("Cannot open input file: " + inputPath);
     auto size = in.tellg();
@@ -53,7 +54,7 @@ void Compressor::compressFile(const std::string& inputPath,
 
     auto compressed = compress(buf, algo);
 
-    std::ofstream out(outputPath, std::ios::binary);
+    std::ofstream out(std::filesystem::u8path(outputPath), std::ios::binary);
     if (!out.is_open())
         throw std::runtime_error("Cannot create output file: " + outputPath);
     out.write(compressed.data(), compressed.size());
@@ -63,7 +64,7 @@ void Compressor::compressFile(const std::string& inputPath,
 void Compressor::decompressFile(const std::string& inputPath,
                                  const std::string& outputPath,
                                  CompressAlgo algo) {
-    std::ifstream in(inputPath, std::ios::binary | std::ios::ate);
+    std::ifstream in(std::filesystem::u8path(inputPath), std::ios::binary | std::ios::ate);
     if (!in.is_open())
         throw std::runtime_error("Cannot open input file: " + inputPath);
     auto size = in.tellg();
@@ -74,7 +75,7 @@ void Compressor::decompressFile(const std::string& inputPath,
 
     auto decompressed = decompress(buf, algo);
 
-    std::ofstream out(outputPath, std::ios::binary);
+    std::ofstream out(std::filesystem::u8path(outputPath), std::ios::binary);
     if (!out.is_open())
         throw std::runtime_error("Cannot create output file: " + outputPath);
     out.write(decompressed.data(), decompressed.size());

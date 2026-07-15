@@ -38,7 +38,7 @@ size_t BackupEngine::backup(const std::string& sourceDir,
     if (progress) progress(0, 1, "Scanning directory...");
    std::vector<FileEntry> entries = FileTraverser::traverse(sourceDir, progress, filter);
 
-    // Prepend root directory name to all paths so restore preserves the folder
+    // Prepend root directory name so restore creates the source folder
     {
         std::string rootName = pathToUtf8(fs::path(sourceDir).filename());
         if (!rootName.empty() && rootName != ".") {
@@ -47,7 +47,6 @@ size_t BackupEngine::backup(const std::string& sourceDir,
             }
         }
     }
-
     size_t fileCount = 0;
     for (const auto& entry : entries) {
         if (entry.fileType != FileType::Directory) {

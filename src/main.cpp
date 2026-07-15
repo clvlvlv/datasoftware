@@ -230,6 +230,13 @@ int main(int argc, char* argv[]) {
             std::string outputPath = ansiToUtf8(argv[3]);
             int algoIdx = std::stoi(argv[4]);
             auto algo = static_cast<datasoftware::CompressAlgo>(algoIdx);
+            // If output path is a directory, auto-generate filename
+            if (std::filesystem::exists(std::filesystem::u8path(outputPath)) && std::filesystem::is_directory(std::filesystem::u8path(outputPath))) {
+                std::string _base = std::filesystem::path(inputPath).filename().string();
+                std::string _ext = algo == datasoftware::CompressAlgo::RLE ? ".rle" : (algo == datasoftware::CompressAlgo::LZ77 ? ".lz77" : ".huff");
+                outputPath = (std::filesystem::path(outputPath) / (_base + _ext)).string();
+                std::cout << " (output directory detected, using: " << outputPath << ")" << std::endl;
+            }
             auto start = std::chrono::steady_clock::now();
             std::cout << "Compressing: " << inputPath << " -> " << outputPath
                       << " (" << datasoftware::Compressor::name(algo) << ")" << std::endl;
@@ -261,22 +268,41 @@ int main(int argc, char* argv[]) {
             auto start = std::chrono::steady_clock::now();
             std::cout << "Decompressing: " << inputPath << " -> " << outputPath
                       << " (" << datasoftware::Compressor::name(algo) << ")" << std::endl;
-            datasoftware::Compressor::decompressFile(inputPath, outputPath, algo);
+            // Decompress to temp file first (avoids conflict with directory output)
+            std::string _tmpOut = outputPath + ".tmp_decomp";
+            datasoftware::Compressor::decompressFile(inputPath, _tmpOut, algo);
             // Check if decompressed result is a backup archive (directory was bundled)
             {
-                std::ifstream _checkArc(std::filesystem::u8path(outputPath), std::ios::binary);
+                std::ifstream _checkArc(std::filesystem::u8path(_tmpOut), std::ios::binary);
                 if (_checkArc.is_open()) {
                     char _magic[6] = {};
                     _checkArc.read(_magic, 6);
                     _checkArc.close();
                     if (std::memcmp(_magic, "DATASW", 6) == 0) {
-                        std::string _arcPath = outputPath + ".tmp_arc";
-                        std::filesystem::rename(std::filesystem::u8path(outputPath),
-                                                 std::filesystem::u8path(_arcPath));
+                        std::cout << " (detected backup archive, restoring...)" << std::endl;
                         std::filesystem::create_directories(std::filesystem::u8path(outputPath));
-                        auto _count = datasoftware::BackupEngine::restore(_arcPath, outputPath);
-                        std::filesystem::remove(std::filesystem::u8path(_arcPath));
+                        auto _count = datasoftware::BackupEngine::restore(_tmpOut, outputPath);
+                        std::filesystem::remove(std::filesystem::u8path(_tmpOut));
                         std::cout << " (extracted " << _count << " files)" << std::endl;
+                    } else {
+                        // Single file decompress - if output is directory, create file inside
+                        if (std::filesystem::is_directory(std::filesystem::u8path(outputPath))) {
+                            std::string fn = std::filesystem::path(inputPath).filename().string();
+                            for (auto ext : {".rle", ".lz77", ".huff"}) {
+                                auto s = std::string(ext);
+                                if (fn.size() > s.size() && fn.substr(fn.size()-s.size()) == s) {
+                                    fn = fn.substr(0, fn.size()-s.size());
+                                    break;
+                                }
+                            }
+                            std::string finalPath = (std::filesystem::path(outputPath) / fn).string();
+                            std::filesystem::rename(std::filesystem::u8path(_tmpOut), std::filesystem::u8path(finalPath));
+                        } else {
+                            if (std::filesystem::exists(std::filesystem::u8path(outputPath)))
+                                std::filesystem::remove(std::filesystem::u8path(outputPath));
+                            std::filesystem::rename(std::filesystem::u8path(_tmpOut),
+                                                     std::filesystem::u8path(outputPath));
+                        }
                     }
                 }
             }
@@ -310,24 +336,47 @@ int main(int argc, char* argv[]) {
             std::string inputPath = ansiToUtf8(argv[2]);
             std::string outputPath = ansiToUtf8(argv[3]);
             std::string password = argv[4];
+            bool _outputIsDir = std::filesystem::is_directory(std::filesystem::u8path(outputPath));
             auto start = std::chrono::steady_clock::now();
             std::cout << "Decrypting: " << inputPath << " -> " << outputPath << std::endl;
-            datasoftware::Crypto::decryptFile(inputPath, outputPath, password);
+            std::string _tmpOut = outputPath + ".tmp_decomp";
+            datasoftware::Crypto::decryptFile(inputPath, _tmpOut, password);
             // Check if decrypted result is a backup archive (directory was bundled)
             {
-                std::ifstream _checkArc(std::filesystem::u8path(outputPath), std::ios::binary);
+                std::ifstream _checkArc(std::filesystem::u8path(_tmpOut), std::ios::binary);
                 if (_checkArc.is_open()) {
                     char _magic[6] = {};
                     _checkArc.read(_magic, 6);
                     _checkArc.close();
                     if (std::memcmp(_magic, "DATASW", 6) == 0) {
-                        std::string _arcPath = outputPath + ".tmp_arc";
-                        std::filesystem::rename(std::filesystem::u8path(outputPath),
-                                                 std::filesystem::u8path(_arcPath));
-                        std::filesystem::create_directories(std::filesystem::u8path(outputPath));
-                        auto _count = datasoftware::BackupEngine::restore(_arcPath, outputPath);
-                        std::filesystem::remove(std::filesystem::u8path(_arcPath));
-                        std::cout << " (extracted " << _count << " files)" << std::endl;
+                        if (_outputIsDir) {
+                            std::cout << " (detected backup archive, restoring...)" << std::endl;
+                            std::filesystem::create_directories(std::filesystem::u8path(outputPath));
+                            auto _count = datasoftware::BackupEngine::restore(_tmpOut, outputPath);
+                            std::filesystem::remove(std::filesystem::u8path(_tmpOut));
+                            std::cout << " (extracted " << _count << " files)" << std::endl;
+                        } else {
+                            if (std::filesystem::exists(std::filesystem::u8path(outputPath)))
+                                std::filesystem::remove(std::filesystem::u8path(outputPath));
+                            std::filesystem::rename(std::filesystem::u8path(_tmpOut), std::filesystem::u8path(outputPath));
+                        }
+                    } else {
+                        std::string fn = std::filesystem::path(inputPath).filename().string();
+                        for (const char* ext : {".rle", ".lz77", ".huff", ".enc"}) {
+                            std::string s(ext);
+                            if (fn.size() > s.size() && fn.substr(fn.size()-s.size()) == s) {
+                                fn = fn.substr(0, fn.size()-s.size());
+                                break;
+                            }
+                        }
+                        if (_outputIsDir) {
+                            std::string _fp = (std::filesystem::path(outputPath) / fn).string();
+                            std::filesystem::rename(std::filesystem::u8path(_tmpOut), std::filesystem::u8path(_fp));
+                            } else {
+                                if (std::filesystem::exists(std::filesystem::u8path(outputPath)))
+                                std::filesystem::remove(std::filesystem::u8path(outputPath));
+                                std::filesystem::rename(std::filesystem::u8path(_tmpOut), std::filesystem::u8path(outputPath));
+                            }
                     }
                 }
             }
