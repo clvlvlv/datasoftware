@@ -113,19 +113,36 @@ void CompressWorker::run() {
                                    .arg(QString::fromStdString(m_input))
                                    .arg(QString::fromStdString(m_output)));
         } else {
-            datasoftware::Compressor::decompressFile(m_input, m_output, m_algo);
+            std::string _tmpOut = m_output + ".tmp_decomp";
+            datasoftware::Compressor::decompressFile(m_input, _tmpOut, m_algo);
             {
-                std::ifstream _checkArc(m_output, std::ios::binary);
+                std::ifstream _checkArc(_tmpOut, std::ios::binary);
                 if (_checkArc.is_open()) {
                     char _magic[6] = {};
                     _checkArc.read(_magic, 6);
                     _checkArc.close();
                     if (std::memcmp(_magic, "DATASW", 6) == 0) {
-                        std::string _arcPath = m_output + ".tmp_arc";
-                        std::filesystem::rename(std::filesystem::u8path(m_output), std::filesystem::u8path(_arcPath));
                         std::filesystem::create_directories(std::filesystem::u8path(m_output));
-                        datasoftware::BackupEngine::restore(_arcPath, m_output);
-                        std::filesystem::remove(std::filesystem::u8path(_arcPath));
+                        datasoftware::BackupEngine::restore(_tmpOut, m_output);
+                        std::filesystem::remove(std::filesystem::u8path(_tmpOut));
+                    } else {
+                        if (std::filesystem::is_directory(std::filesystem::u8path(m_output))) {
+                            std::string baseName = std::filesystem::path(m_input).stem().string();
+                            for (auto ext : {".rle", ".lz77", ".huff"}) {
+                                auto s = std::string(ext);
+                                if (baseName.size() > s.size() && baseName.substr(baseName.size()-s.size()) == s) {
+                                    baseName = baseName.substr(0, baseName.size()-s.size());
+                                    break;
+                                }
+                            }
+                            std::string finalPath = (std::filesystem::path(m_output) / baseName).string();
+                            std::filesystem::rename(std::filesystem::u8path(_tmpOut), std::filesystem::u8path(finalPath));
+                        } else {
+                            if (std::filesystem::exists(std::filesystem::u8path(m_output)))
+                                std::filesystem::remove(std::filesystem::u8path(m_output));
+                            std::filesystem::rename(std::filesystem::u8path(_tmpOut),
+                                                     std::filesystem::u8path(m_output));
+                        }
                     }
                 }
             }
@@ -412,10 +429,6 @@ void MainWindow::setupUI() {
     m_compressBtn->setMinimumHeight(32);
     connect(m_compressBtn, &QPushButton::clicked, this, &MainWindow::onCompress);
     btnRow->addWidget(m_compressBtn);
-    m_decompressBtn = new QPushButton("Decompress");
-    m_decompressBtn->setMinimumHeight(32);
-    connect(m_decompressBtn, &QPushButton::clicked, this, &MainWindow::onDecompress);
-    btnRow->addWidget(m_decompressBtn);
     btnRow->addStretch();
     compLayout->addLayout(btnRow);
 
@@ -433,6 +446,10 @@ void MainWindow::setupUI() {
     compLayout->addStretch();
 
     tabs->addTab(compTab, "Compression");
+
+    // ========== TAB: Decompress ==========
+    auto* decompressTab = _setup_decompress_tab();
+    tabs->addTab(decompressTab, "Decompress");
 
     // ========== TAB 3: Encryption ==========
     auto* encTab = new QWidget();
@@ -479,10 +496,6 @@ void MainWindow::setupUI() {
     m_encryptBtn->setMinimumHeight(32);
     connect(m_encryptBtn, &QPushButton::clicked, this, &MainWindow::onEncryptFile);
     encBtnRow->addWidget(m_encryptBtn);
-    m_decryptBtn = new QPushButton("Decrypt File");
-    m_decryptBtn->setMinimumHeight(32);
-    connect(m_decryptBtn, &QPushButton::clicked, this, &MainWindow::onDecryptFile);
-    encBtnRow->addWidget(m_decryptBtn);
     encBtnRow->addStretch();
     encLayout->addLayout(encBtnRow);
 
@@ -604,6 +617,48 @@ void MainWindow::setupUI() {
     mainLayout->addWidget(tabs);
     setCentralWidget(central);
     refreshFilePreview();
+}
+
+
+QWidget* MainWindow::_setup_decompress_tab() {
+    auto* tab = new QWidget();
+    auto* layout = new QVBoxLayout(tab);
+    layout->setSpacing(10);
+    layout->setContentsMargins(12, 12, 12, 12);
+
+    auto* inRow = new QHBoxLayout();
+    inRow->addWidget(new QLabel("Compressed File:"));
+    m_decompInputEdit = new QLineEdit();
+    m_decompInputEdit->setPlaceholderText("Select compressed file...");
+    auto* browseInBtn = new QPushButton("Browse...");
+    browseInBtn->setFixedWidth(90);
+    connect(browseInBtn, &QPushButton::clicked, this, &MainWindow::onBrowseDecompInput);
+    inRow->addWidget(m_decompInputEdit, 1);
+    inRow->addWidget(browseInBtn);
+    layout->addLayout(inRow);
+
+    auto* outRow = new QHBoxLayout();
+    outRow->addWidget(new QLabel("Output Folder:"));
+    auto* browseOutBtn = new QPushButton("Browse Folder...");
+    browseOutBtn->setFixedWidth(120);
+    connect(browseOutBtn, &QPushButton::clicked, this, &MainWindow::onBrowseDecompOutput);
+    outRow->addStretch();
+    outRow->addWidget(browseOutBtn);
+    layout->addLayout(outRow);
+
+    m_decompressBtn = new QPushButton("Decompress");
+    m_decompressBtn->setMinimumHeight(32);
+    connect(m_decompressBtn, &QPushButton::clicked, this, &MainWindow::onDecompressBtn);
+    layout->addWidget(m_decompressBtn);
+
+    m_decompProgress = new QProgressBar();
+    m_decompProgress->setRange(0, 100);
+    layout->addWidget(m_decompProgress);
+    m_decompStatus = new QLabel("Ready.");
+    layout->addWidget(m_decompStatus);
+
+    layout->addStretch();
+    return tab;
 }
 
 // =====================================================================
@@ -815,15 +870,15 @@ void MainWindow::setInputsEnabled(bool en) {
     m_backupPwdEdit->setEnabled(en);
     m_restorePwdEdit->setEnabled(en);
     m_compressBtn->setEnabled(en);
-    m_decompressBtn->setEnabled(en);
     m_compInputEdit->setEnabled(en);
     m_compOutputEdit->setEnabled(en);
     m_algoCombo->setEnabled(en);
+    m_decompInputEdit->setEnabled(en);
+    m_decompressBtn->setEnabled(en);
     m_encInputEdit->setEnabled(en);
     m_encOutputEdit->setEnabled(en);
     m_encPwdEdit->setEnabled(en);
     m_encryptBtn->setEnabled(en);
-    m_decryptBtn->setEnabled(en);
     m_packBtn->setEnabled(en);
     m_unpackBtn->setEnabled(en);
     m_packOutputEdit->setEnabled(en);
@@ -914,16 +969,75 @@ void MainWindow::onApplyFilters() {
 }
 
 // =====================================================================
+//  Decompress - Slots
+// =====================================================================
+
+void MainWindow::onBrowseDecompInput() {
+    QString f = QFileDialog::getOpenFileName(this, "Select Compressed File",
+                                              m_decompInputEdit->text(),
+                                              "All Files (*);;Compressed (*.rle *.lz77 *.huff)");
+    if (!f.isEmpty()) {
+        m_decompInputEdit->setText(f);
+    }
+}
+
+void MainWindow::onBrowseDecompOutput() {
+    QString d = QFileDialog::getExistingDirectory(this, "Select Output Folder",
+                                                    m_decompInputEdit->text());
+    if (!d.isEmpty()) {
+        // Set a placeholder in the input field to signal where output goes
+        // (the output path is shown in the browse dialog)
+    }
+}
+
+void MainWindow::onDecompressBtn() {
+    QString inputFile = m_decompInputEdit->text().trimmed();
+    if (inputFile.isEmpty()) {
+        QMessageBox::warning(this, "Missing", "Please select a compressed file.");
+        return;
+    }
+    // Auto-detect output folder: use input file's directory + filename without extension
+    QFileInfo fi(inputFile);
+    QString baseName = fi.completeBaseName();  // filename without .rle/.lz77/.huff
+    QString outputDir = fi.absolutePath() + "/" + baseName + "_extracted";
+    
+    setInputsEnabled(false);
+    m_decompProgress->setValue(0);
+    m_decompStatus->setText("Decompressing...");
+    QApplication::processEvents();
+
+    auto* w = new CompressWorker(inputFile.toStdString(), outputDir.toStdString(),
+                                  CompressAlgo::RLE, CompressWorker::Decompress);
+    connect(w, &CompressWorker::operationFinished, this, &MainWindow::onDecompressBtnFinished);
+    connect(w, &QThread::finished, w, &QObject::deleteLater);
+    w->start();
+}
+
+void MainWindow::onDecompressBtnFinished(bool ok, const QString& msg) {
+    setInputsEnabled(true);
+    m_decompProgress->setValue(m_decompProgress->maximum());
+    m_decompStatus->setText(msg);
+    if (ok) QMessageBox::information(this, "Success", msg);
+    else    QMessageBox::critical(this, "Error", msg);
+}
+
+// =====================================================================
 //  Compression - Slots
 // =====================================================================
 
 void MainWindow::onBrowseCompInput() {
     QString f = QFileDialog::getOpenFileName(this, "Select Input File",
                                               m_compInputEdit->text(),
-                                              "All Files (*)");
+                                              "All Files (*);;Compressed (*.rle *.lz77 *.huff)");
     if (!f.isEmpty()) m_compInputEdit->setText(f);
 }
 
+
+void MainWindow::onBrowseCompOutputFolder() {
+    QString d = QFileDialog::getExistingDirectory(this, "Select Output Folder",
+                                                    m_compOutputEdit->text());
+    if (!d.isEmpty()) m_compOutputEdit->setText(d);
+}
 void MainWindow::onBrowseCompFolder() {
     QString d = QFileDialog::getExistingDirectory(this, "Select Input Folder",
                                                     m_compInputEdit->text());
@@ -931,9 +1045,11 @@ void MainWindow::onBrowseCompFolder() {
 }
 
 void MainWindow::onBrowseCompOutput() {
+    int _algoIdx = m_algoCombo->currentData().toInt();
+    QString _ext = _algoIdx == 0 ? ".rle" : (_algoIdx == 1 ? ".lz77" : ".huff");
     QString f = QFileDialog::getSaveFileName(this, "Select Output File",
-                                              m_compOutputEdit->text(),
-                                              "All Files (*)");
+                                              m_compOutputEdit->text().isEmpty() ? "output" + _ext : m_compOutputEdit->text(),
+                                              "All Files (*);;Compressed (*.rle *.lz77 *.huff)");
     if (!f.isEmpty()) m_compOutputEdit->setText(f);
 }
 
@@ -995,10 +1111,16 @@ void MainWindow::onCompFinished(bool ok, const QString& msg) {
 
 void MainWindow::onBrowseEncInput() {
     QString f = QFileDialog::getOpenFileName(this, "Select Input File",
-                                              m_encInputEdit->text(), "All Files (*)");
+                                              m_encInputEdit->text(), "All Files (*);;Encrypted (*.enc)");
     if (!f.isEmpty()) m_encInputEdit->setText(f);
 }
 
+
+void MainWindow::onBrowseEncOutputFolder() {
+    QString d = QFileDialog::getExistingDirectory(this, "Select Output Folder",
+                                                    m_encOutputEdit->text());
+    if (!d.isEmpty()) m_encOutputEdit->setText(d);
+}
 void MainWindow::onBrowseEncFolder() {
     QString d = QFileDialog::getExistingDirectory(this, "Select Input Folder",
                                                     m_encInputEdit->text());
@@ -1007,7 +1129,8 @@ void MainWindow::onBrowseEncFolder() {
 
 void MainWindow::onBrowseEncOutput() {
     QString f = QFileDialog::getSaveFileName(this, "Select Output File",
-                                              m_encOutputEdit->text(), "All Files (*)");
+                                              m_encOutputEdit->text().isEmpty() ? "output.enc" : m_encOutputEdit->text(),
+                                              "All Files (*);;Encrypted (*.enc)");
     if (!f.isEmpty()) m_encOutputEdit->setText(f);
 }
 

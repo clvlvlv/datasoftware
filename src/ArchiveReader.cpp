@@ -13,7 +13,7 @@ namespace fs = std::filesystem;
 namespace datasoftware {
 
 std::vector<FileEntry> ArchiveReader::read(const std::string& archivePath) {
-    std::ifstream in(archivePath, std::ios::binary);
+    std::ifstream in(std::filesystem::u8path(archivePath), std::ios::binary);
     if (!in.is_open()) {
         throw std::runtime_error("Cannot open archive file: " + archivePath);
     }

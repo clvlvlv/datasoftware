@@ -51,6 +51,8 @@ class MainWindow(QMainWindow):
 
         self._setup_backup_tab()
         self._setup_compression_tab()
+        self._setup_decompress_tab()
+        self._setup_decrypt_tab()
         self._setup_encryption_tab()
 
     def _elapsed_str(self):
@@ -342,12 +344,6 @@ class MainWindow(QMainWindow):
         self.compress_btn.setMinimumWidth(140)
         comp_btn_layout.addWidget(self.compress_btn)
 
-        self.decompress_btn = ModernButton("⬆️ 解压", success=True)
-        self.decompress_btn.clicked.connect(self._on_decompress)
-        self.decompress_btn.setMinimumHeight(38)
-        self.decompress_btn.setMinimumWidth(140)
-        comp_btn_layout.addWidget(self.decompress_btn)
-        comp_btn_layout.addStretch()
         layout.addLayout(comp_btn_layout)
 
         status_group = QGroupBox("📊 状态")
@@ -373,6 +369,143 @@ class MainWindow(QMainWindow):
     # ================================================================
     #  加密标签页
     # ================================================================
+
+
+    # ================================================================
+    #  解压标签页
+    # ================================================================
+
+    def _setup_decompress_tab(self):
+        tab = QWidget()
+        outer_layout = QVBoxLayout(tab)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(12)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        io_group = QGroupBox("📂 选择解压文件")
+        io_layout = QVBoxLayout(io_group)
+        io_layout.setSpacing(10)
+
+        input_row = QHBoxLayout()
+        input_row.addWidget(QLabel("压缩文件:"))
+        self.decomp_input = ModernLineEdit("选择需要解压的文件...")
+        input_row.addWidget(self.decomp_input, 1)
+        decomp_browse_btn = ModernButton("📄 浏览")
+        decomp_browse_btn.clicked.connect(self._on_browse_decomp_input)
+        input_row.addWidget(decomp_browse_btn)
+        io_layout.addLayout(input_row)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("解压到:"))
+        self.decomp_output = ModernLineEdit("选择解压目标目录...")
+        output_row.addWidget(self.decomp_output, 1)
+        decomp_out_folder_btn = ModernButton("📁 浏览")
+        decomp_out_folder_btn.clicked.connect(self._on_browse_decomp_output)
+        output_row.addWidget(decomp_out_folder_btn)
+        io_layout.addLayout(output_row)
+
+        layout.addWidget(io_group)
+
+        self.decompress_btn = ModernButton("📦 开始解压", success=True)
+        self.decompress_btn.setMinimumHeight(38)
+        self.decompress_btn.clicked.connect(self._on_decompress)
+        layout.addWidget(self.decompress_btn)
+
+        status_group = QGroupBox("📳 状态")
+        status_layout = QVBoxLayout(status_group)
+        self.decomp_progress = ModernProgressBar()
+        status_layout.addWidget(self.decomp_progress)
+        self.decomp_status = QLabel("就绪")
+        self.decomp_status.setObjectName("statusLabel")
+        status_layout.addWidget(self.decomp_status)
+        layout.addWidget(status_group)
+
+        self.decomp_log = LogPanel("📰 解压日志")
+        layout.addWidget(self.decomp_log)
+
+        layout.addStretch()
+
+        scroll.setWidget(container)
+        outer_layout.addWidget(scroll)
+
+        self.tabs.addTab(tab, "🖰️ 解压")
+
+
+    def _setup_decrypt_tab(self):
+        tab = QWidget()
+        outer_layout = QVBoxLayout(tab)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(12)
+        layout.setContentsMargins(14, 14, 14, 14)
+
+        io_group = QGroupBox("🔐 选择解密文件")
+        io_layout = QVBoxLayout(io_group)
+        io_layout.setSpacing(10)
+
+        input_row = QHBoxLayout()
+        input_row.addWidget(QLabel("加密文件:"))
+        self.decrypt_input = ModernLineEdit("选择需要解密的文件...")
+        input_row.addWidget(self.decrypt_input, 1)
+        decrypt_browse_btn = ModernButton("📄 浏览")
+        decrypt_browse_btn.clicked.connect(self._on_browse_decrypt_input)
+        input_row.addWidget(decrypt_browse_btn)
+        io_layout.addLayout(input_row)
+
+        pwd_row = QHBoxLayout()
+        pwd_row.addWidget(QLabel("密码:"))
+        self.decrypt_password = ModernLineEdit("输入密码...")
+        self.decrypt_password.setEchoMode(QLineEdit.Password)
+        pwd_row.addWidget(self.decrypt_password, 1)
+        io_layout.addLayout(pwd_row)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("解密到:"))
+        self.decrypt_output = ModernLineEdit("选择解密目标目录...")
+        output_row.addWidget(self.decrypt_output, 1)
+        decrypt_folder_btn = ModernButton("📁 浏览")
+        decrypt_folder_btn.clicked.connect(self._on_browse_decrypt_output)
+        output_row.addWidget(decrypt_folder_btn)
+        io_layout.addLayout(output_row)
+
+        layout.addWidget(io_group)
+
+        self.decrypt_btn = ModernButton("🔐 开始解密", success=True)
+        self.decrypt_btn.setMinimumHeight(38)
+        self.decrypt_btn.clicked.connect(self._on_decrypt)
+        layout.addWidget(self.decrypt_btn)
+
+        status_group = QGroupBox("📳 状态")
+        status_layout = QVBoxLayout(status_group)
+        self.decrypt_progress = ModernProgressBar()
+        status_layout.addWidget(self.decrypt_progress)
+        self.decrypt_status = QLabel("就绪")
+        self.decrypt_status.setObjectName("statusLabel")
+        status_layout.addWidget(self.decrypt_status)
+        layout.addWidget(status_group)
+
+        self.decrypt_log = LogPanel("📰 解密日志")
+        layout.addWidget(self.decrypt_log)
+
+        layout.addStretch()
+
+        scroll.setWidget(container)
+        outer_layout.addWidget(scroll)
+
+        self.tabs.addTab(tab, "🔐 解密")
 
     def _setup_encryption_tab(self):
         tab = QWidget()
@@ -430,12 +563,6 @@ class MainWindow(QMainWindow):
         self.encrypt_btn.setMinimumWidth(140)
         enc_btn_layout.addWidget(self.encrypt_btn)
 
-        self.decrypt_btn = ModernButton("🔓 解密", success=True)
-        self.decrypt_btn.clicked.connect(self._on_decrypt)
-        self.decrypt_btn.setMinimumHeight(38)
-        self.decrypt_btn.setMinimumWidth(140)
-        enc_btn_layout.addWidget(self.decrypt_btn)
-        enc_btn_layout.addStretch()
         layout.addLayout(enc_btn_layout)
 
         status_group = QGroupBox("📊 状态")
@@ -820,14 +947,79 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _on_browse_comp_input(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择输入文件")
+        path, _ = QFileDialog.getOpenFileName(self, "选择输入文件", "", "所有文件 (*);;压缩文件 (*.rle *.lz77 *.huff)")
         if path:
             self.comp_input.setText(path)
 
-    def _on_browse_comp_output(self):
-        path, _ = QFileDialog.getSaveFileName(self, "选择输出文件")
+    def _on_browse_comp_output_folder(self):
+        path = QFileDialog.getExistingDirectory(self, "选择输出目录")
         if path:
             self.comp_output.setText(path)
+
+    def _on_browse_comp_output(self):
+        algo_exts = [".rle", ".lz77", ".huff"]
+        ext = algo_exts[self.algo_combo.currentIndex()]
+        default_name = f"输出{ext}"
+        input_file = self.comp_input.text().strip()
+        if input_file and os.path.isfile(input_file):
+            base = os.path.basename(input_file)
+            if base:
+                default_name = base + ext
+        path, _ = QFileDialog.getSaveFileName(self, "选择输出文件", default_name, f"{ext.upper()}压缩文件 (*{ext});;所有文件 (*)")
+        if path:
+            self.comp_output.setText(path)
+
+
+    def _on_browse_decomp_input(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择需要解压的文件",
+                                              "", "所有文件 (*);;压缩文件 (*.rle *.lz77 *.huff)")
+        if path:
+            self.decomp_input.setText(path)
+
+    def _on_browse_decomp_output(self):
+        path = QFileDialog.getExistingDirectory(self, "选择解压目标目录")
+        if path:
+            self.decomp_output.setText(path)
+
+    def _on_decompress(self):
+        input_file = self.decomp_input.text().strip()
+        output_dir = self.decomp_output.text().strip()
+        if not input_file:
+            QMessageBox.warning(self, "提示", "请选择需要解压的文件")
+            return
+        if not output_dir:
+            QMessageBox.warning(self, "提示", "请选择解压目标目录")
+            return
+
+        self.decompress_btn.setEnabled(False)
+        self.decomp_progress.setProgress(0, 1)
+        self.decomp_status.setText("正在解压...")
+        self.decomp_log.log(f"开始解压: {input_file} → {output_dir}", "info")
+
+        self.decomp_worker = CompressWorker(input_file, output_dir, 0, "decompress")
+        self.decomp_worker.log_message.connect(self.decomp_log.log)
+        # Update progress from worker
+        self.decomp_worker.progress.connect(self._on_decomp_progress)
+        self.decomp_worker.finished.connect(self._on_decomp_finished)
+        self.decomp_worker.start()
+
+    def _on_decomp_progress(self, current, total, message):
+        self.decomp_progress.setProgress(current, total)
+        if message:
+            self.decomp_status.setText(message)
+
+    def _on_decomp_finished(self, success, message):
+        self.decompress_btn.setEnabled(True)
+        if success:
+            self.decomp_progress.setValue(100)
+            self.decomp_status.setText("解压完成")
+            self.decomp_log.log(message, "success")
+            QMessageBox.information(self, "解压成功", message)
+        else:
+            self.decomp_progress.setValue(0)
+            self.decomp_status.setText(f"解压失败: {message}")
+            self.decomp_log.log(message, "error")
+            QMessageBox.critical(self, "解压失败", message)
 
     def _on_browse_comp_folder(self):
         path = QFileDialog.getExistingDirectory(self, "选择要压缩的文件夹")
@@ -836,9 +1028,6 @@ class MainWindow(QMainWindow):
 
     def _on_compress(self):
         self._do_compression("compress")
-
-    def _on_decompress(self):
-        self._do_compression("decompress")
 
     def _do_compression(self, action):
         input_file = self.comp_input.text().strip()
@@ -886,13 +1075,79 @@ class MainWindow(QMainWindow):
     #  加密相关槽函数
     # ================================================================
 
+
+    def _on_browse_decrypt_input(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择需要解密的文件",
+                                              "", "所有文件 (*);;加密文件 (*.enc)")
+        if path:
+            self.decrypt_input.setText(path)
+
+    def _on_browse_decrypt_output(self):
+        path = QFileDialog.getExistingDirectory(self, "选择解密目标目录")
+        if path:
+            self.decrypt_output.setText(path)
+
+    def _on_decrypt(self):
+        input_file = self.decrypt_input.text().strip()
+        password = self.decrypt_password.text()
+        output_dir = self.decrypt_output.text().strip()
+        if not input_file:
+            QMessageBox.warning(self, "提示", "请选择需要解密的文件")
+            return
+        if not password:
+            QMessageBox.warning(self, "提示", "请输入密码")
+            return
+        if not output_dir:
+            QMessageBox.warning(self, "提示", "请选择解密目标目录")
+            return
+
+        self.decrypt_btn.setEnabled(False)
+        self.decrypt_progress.setProgress(0, 1)
+        self.decrypt_status.setText("正在解密...")
+        self.decrypt_log.log(f"开始解密: {input_file} → {output_dir}", "info")
+
+        self.decrypt_worker = EncryptWorker(input_file, output_dir, password, "decrypt")
+        self.decrypt_worker.log_message.connect(self.decrypt_log.log)
+        self.decrypt_worker.progress.connect(self._on_decrypt_progress)
+        self.decrypt_worker.finished.connect(self._on_decrypt_finished)
+        self.decrypt_worker.start()
+
+    def _on_decrypt_progress(self, current, total, message):
+        self.decrypt_progress.setProgress(current, total)
+        if message:
+            self.decrypt_status.setText(message)
+
+    def _on_decrypt_finished(self, success, message):
+        self.decrypt_btn.setEnabled(True)
+        if success:
+            self.decrypt_progress.setValue(100)
+            self.decrypt_status.setText("解密完成")
+            self.decrypt_log.log(message, "success")
+            QMessageBox.information(self, "解密成功", message)
+        else:
+            self.decrypt_progress.setValue(0)
+            self.decrypt_status.setText(f"解密失败: {message}")
+            self.decrypt_log.log(message, "error")
+            QMessageBox.critical(self, "解密失败", message)
+
     def _on_browse_enc_input(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择输入文件")
+        path, _ = QFileDialog.getOpenFileName(self, "选择输入文件", "", "所有文件 (*);;加密文件 (*.enc)")
         if path:
             self.enc_input.setText(path)
 
+    def _on_browse_enc_output_folder(self):
+        path = QFileDialog.getExistingDirectory(self, "选择输出目录")
+        if path:
+            self.enc_output.setText(path)
+
     def _on_browse_enc_output(self):
-        path, _ = QFileDialog.getSaveFileName(self, "选择输出文件")
+        default_name = "输出.enc"
+        input_file = self.enc_input.text().strip()
+        if input_file and os.path.isfile(input_file):
+            base = os.path.basename(input_file)
+            if base:
+                default_name = base + ".enc"
+        path, _ = QFileDialog.getSaveFileName(self, "选择输出文件", default_name, "所有文件 (*);;加密文件 (*.enc)")
         if path:
             self.enc_output.setText(path)
 
@@ -904,8 +1159,6 @@ class MainWindow(QMainWindow):
     def _on_encrypt(self):
         self._do_encryption("encrypt")
 
-    def _on_decrypt(self):
-        self._do_encryption("decrypt")
 
     def _do_encryption(self, action):
         input_file = self.enc_input.text().strip()

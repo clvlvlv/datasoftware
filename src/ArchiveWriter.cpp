@@ -9,7 +9,7 @@ namespace datasoftware {
 
 void ArchiveWriter::write(const std::string& archivePath,
                           const std::vector<FileEntry>& entries) {
-    std::ofstream out(archivePath, std::ios::binary);
+    std::ofstream out(std::filesystem::u8path(archivePath), std::ios::binary);
     if (!out.is_open()) {
         throw std::runtime_error("Cannot create archive file: " + archivePath);
     }
@@ -72,7 +72,7 @@ void ArchiveWriter::writeFile(const std::string& archivePath,
                                const std::string& sourcePath,
                                const std::string& archiveRelativePath,
                                const FileMetadata& metadata) {
-    std::ofstream out(archivePath, std::ios::binary | std::ios::app);
+    std::ofstream out(std::filesystem::u8path(archivePath), std::ios::binary | std::ios::app);
     if (!out.is_open()) {
         throw std::runtime_error("Cannot open archive: " + archivePath);
     }
