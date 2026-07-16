@@ -30,6 +30,7 @@ class StyleManager:
         """获取后备样式"""
         return """
             QWidget { background-color: #1e1e2e; color: #cdd6f4; font-family: "Segoe UI", sans-serif; }
+            QTreeWidget, QTreeView, QListView, QTableView { alternate-background-color: #181825; }
             QPushButton { background-color: #45475a; color: #cdd6f4; border: none; border-radius: 6px; padding: 8px 16px; }
             QPushButton:hover { background-color: #585b70; }
             QLineEdit { background-color: #313244; color: #cdd6f4; border: 1px solid #45475a; border-radius: 6px; padding: 6px; }

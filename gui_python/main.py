@@ -22,7 +22,7 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     
     app = QApplication(sys.argv)
-app.setFont(QFont("Segoe UI", 9))
+    app.setFont(QFont("Segoe UI", 9))
     app.setApplicationName("数据备份软件")
     app.setApplicationVersion("1.0.0")
     
