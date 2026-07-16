@@ -23,7 +23,12 @@
 
 namespace datasoftware {
 
-// ===== Worker for backup/restore =====
+/**
+ * @class BackupWorker
+ * @brief 后台备份/恢复工作线程
+ * @details 继承自 QThread，在 run() 中执行耗时的 I/O 操作。
+ *          通过 Qt 信号槽 (signals/slots) 机制向主线程发送进度更新，实现 UI 非阻塞。
+ */
 class BackupWorker : public QThread {
     Q_OBJECT
 public:
