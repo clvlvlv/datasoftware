@@ -1239,7 +1239,6 @@ void testMetadataAttributes() {
 
 // === Main ===
 
-// 替换原有的 main 函数
 int main() {
     std::cout << "=== Data Backup Software - Complete Test Suite ===" << std::endl;
     std::cout << std::endl;
@@ -1248,7 +1247,7 @@ int main() {
     std::cout << "--- Basic Functionality ---" << std::endl;
     setup(); testTraverseEmptyDir();
     setup(); testTraverseSingleFile();
-    setup(); testTraverseNestedFiles();  // 已修复
+    setup(); testTraverseNestedFiles(); 
     setup(); testArchiveRoundTrip();
     setup(); testBackupAndRestore();
     setup(); testEmptyDirBackup();
