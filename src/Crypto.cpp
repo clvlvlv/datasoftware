@@ -38,6 +38,12 @@ static void checkBCrypt(NTSTATUS status, const char* msg) {
     }
 }
 
+/**
+ * @brief 基于 BCrypt 的密钥派生函数 (KDF)
+ * @details 使用 SHA-256 对 (Context + Password + Salt) 进行哈希，生成 256 位 AES 密钥。
+ *          这种设计确保了即使密码相同，不同的 Salt 也会产生完全不同的加密密钥。
+ *          Context 参数用于区分不同用途的密钥（如加密密钥和HMAC密钥），防止密钥复用。
+ */
 static std::vector<char> deriveKey(const std::string& password,
                                     const uint8_t salt[16],
                                     const char* context) {
@@ -110,12 +116,19 @@ bool Crypto::isEncryptedFile(const std::string& filePath) {
            magic[2]=='E' && magic[3]=='N' && magic[4]=='C';
 }
 
+/**
+ * @brief 执行 AES-256-CBC 加密并附加 HMAC-SHA256 签名
+ * @details 遵循“先加密后认证” (Encrypt-then-MAC) 的安全范式，防止密文在传输中被篡改。
+ *          该模式先对明文进行加密，然后对密文（包括salt和iv）计算HMAC，
+ *          确保任何对密文的修改都会被检测到。
+ */
 std::vector<char> Crypto::encrypt(const std::vector<char>& data,
                                    const std::string& password) {
     if (password.empty())
         throw std::runtime_error("Password cannot be empty");
 
-    // Generate random salt and IV
+    // 1. 生成高强度的随机 Salt 和 IV (初始化向量)
+    //    Salt 用于防御彩虹表攻击，IV 保证相同的明文每次加密结果都不同
     uint8_t salt[16], iv[16];
     NTSTATUS status;
     status = BCryptGenRandom(nullptr, salt, sizeof(salt),
@@ -125,10 +138,12 @@ std::vector<char> Crypto::encrypt(const std::vector<char>& data,
                              BCRYPT_USE_SYSTEM_PREFERRED_RNG);
     checkBCrypt(status, "GenRandom iv");
 
-    // Derive encryption key
+    // 2. 派生加密密钥
+    //    使用特定上下文 "enc-key" 派生用于AES加密的密钥
     auto encKey = deriveKey(password, salt, "enc-key");
 
-    // Open AES provider
+    // 3. 配置 AES-CBC 模式并执行加密
+    //    CBC模式需要初始化向量(IV)来确保相同明文块产生不同密文块
     BCRYPT_ALG_HANDLE hAes = nullptr;
     checkBCrypt(BCryptOpenAlgorithmProvider(&hAes, BCRYPT_AES_ALGORITHM,
                                             nullptr, 0),
@@ -184,7 +199,8 @@ std::vector<char> Crypto::encrypt(const std::vector<char>& data,
     BCryptDestroyKey(hKey);
     BCryptCloseAlgorithmProvider(hAes, 0);
 
-    // Build output: magic(5) + version(4) + salt(16) + iv(16) + encrypted + hmac(32)
+    // 5. 组装最终格式：[Magic][Version][Salt][IV][Encrypted][HMAC]
+    //    这种结构化格式便于解密时解析各个组件，并验证数据完整性
     std::vector<char> out;
     out.resize(HEADER_SIZE + encrypted.size());
 
@@ -197,7 +213,9 @@ std::vector<char> Crypto::encrypt(const std::vector<char>& data,
     std::memcpy(&out[pos], iv, 16);   pos += 16;
     std::memcpy(&out[pos], encrypted.data(), encrypted.size()); pos += encrypted.size();
 
-    // HMAC of salt + iv + encrypted_data
+    // 4. 计算 HMAC：对 Salt + IV + EncryptedData 进行签名
+    //    使用不同的上下文 "hmac-key" 派生用于消息认证的密钥
+    //    HMAC验证失败表明数据可能被篡改或密码错误
     std::vector<char> hmacData;
     hmacData.resize(16 + 16 + encrypted.size());
     std::memcpy(hmacData.data(), salt, 16);

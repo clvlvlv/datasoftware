@@ -1,4 +1,4 @@
-﻿"""
+"""
 后台工作线程模块 —— 通过 subprocess 调用 C++ CLI 可执行文件
 """
 
@@ -44,9 +44,20 @@ def find_executable():
 
 
 class BackupWorker(QThread):
-    progress = pyqtSignal(int, int, str)
-    log_message = pyqtSignal(str, str)
-    finished = pyqtSignal(bool, str, int)
+    """
+    备份操作工作线程
+    
+    负责调用 dsbackup.exe 执行备份任务，并实时解析其输出的进度和状态信息。
+    支持文件夹备份和文件打包两种模式，以及可选的加密功能。
+    
+    @signals
+        progress: 发出进度更新 (current, total, message)
+        log_message: 发出日志消息 (message, level)
+        finished: 发出完成状态 (success, message, total_count)
+    """
+    progress = pyqtSignal(int, int, str)  # current, total, message
+    log_message = pyqtSignal(str, str)    # message, level ('info', 'progress', 'success', 'error')
+    finished = pyqtSignal(bool, str, int) # success, message, total_count
 
     def __init__(self, source, dest, password="", backup_type="folder", files=None, filters=None):
         super().__init__()
@@ -85,6 +96,9 @@ class BackupWorker(QThread):
                 except:
                     line = line.decode('gbk', errors='replace').strip()
                 
+                # 【IPC 协议解析】：处理进度更新
+                # 格式: [PROGRESS] <当前计数> <总计数> <描述信息>
+                # 示例: [PROGRESS] 3 10 Processing file.txt
                 match = re.match(r"\[PROGRESS\]\s+(\d+)\s+(\d+)\s+(.*)", line)
                 if match:
                     current = int(match.group(1))
@@ -95,6 +109,10 @@ class BackupWorker(QThread):
                     self.log_message.emit(f"{msg} ({current}/{total})", "progress")
                     continue
 
+                # 【IPC 协议解析】：处理操作完成状态
+                # 格式: [DONE] <状态> <消息>
+                # 状态: OK 表示成功，ERR 表示失败
+                # 示例: [DONE] OK Backup completed successfully
                 done_match = re.match(r"\[DONE\]\s+(OK|ERR)\s+(.*)", line)
                 if done_match:
                     ok = done_match.group(1) == "OK"
@@ -155,9 +173,20 @@ class BackupWorker(QThread):
 
 
 class RestoreWorker(QThread):
-    progress = pyqtSignal(int, int, str)
-    log_message = pyqtSignal(str, str)
-    finished = pyqtSignal(bool, str, int)
+    """
+    恢复操作工作线程
+    
+    负责调用 dsbackup.exe 执行恢复任务，支持解密后恢复流程。
+    解析 CLI 输出的进度和状态信息，并通过信号通知 UI 层。
+    
+    @signals
+        progress: 发出进度更新 (current, total, message)
+        log_message: 发出日志消息 (message, level)
+        finished: 发出完成状态 (success, message, total_count)
+    """
+    progress = pyqtSignal(int, int, str)  # current, total, message
+    log_message = pyqtSignal(str, str)    # message, level
+    finished = pyqtSignal(bool, str, int) # success, message, total_count
 
     def __init__(self, source, dest, password=""):
         super().__init__()
@@ -263,9 +292,20 @@ class RestoreWorker(QThread):
 
 
 class CompressWorker(QThread):
-    progress = pyqtSignal(int, int, str)
-    log_message = pyqtSignal(str, str)
-    finished = pyqtSignal(bool, str)
+    """
+    压缩/解压工作线程
+    
+    执行文件压缩或解压操作，通过 CLI 工具实现。
+    实时解析工具输出的状态信息并更新 UI。
+    
+    @signals
+        progress: 发出进度更新 (current, total, message)
+        log_message: 发出日志消息 (message, level)
+        finished: 发出完成状态 (success, message)
+    """
+    progress = pyqtSignal(int, int, str)  # current, total, message
+    log_message = pyqtSignal(str, str)    # message, level
+    finished = pyqtSignal(bool, str)     # success, message
 
     def __init__(self, input_file, output_file, algo, action="compress"):
         super().__init__()
@@ -334,9 +374,20 @@ class CompressWorker(QThread):
 
 
 class EncryptWorker(QThread):
-    progress = pyqtSignal(int, int, str)
-    log_message = pyqtSignal(str, str)
-    finished = pyqtSignal(bool, str)
+    """
+    加密/解密工作线程
+    
+    执行文件加密或解密操作，通过 CLI 工具实现。
+    监听并解析工具输出的状态信息，提供进度反馈。
+    
+    @signals
+        progress: 发出进度更新 (current, total, message)
+        log_message: 发出日志消息 (message, level)
+        finished: 发出完成状态 (success, message)
+    """
+    progress = pyqtSignal(int, int, str)  # current, total, message
+    log_message = pyqtSignal(str, str)    # message, level
+    finished = pyqtSignal(bool, str)     # success, message
 
     def __init__(self, input_file, output_file, password, action="encrypt"):
         super().__init__()

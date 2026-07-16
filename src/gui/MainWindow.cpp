@@ -29,10 +29,16 @@ namespace datasoftware {
 //  BackupWorker
 // =====================================================================
 
+/**
+ * @brief 备份/恢复工作线程执行逻辑
+ * @details 在后台线程中调用 BackupEngine，避免阻塞 UI。
+ *          支持加密归档的自动解密与密码校验。
+ */
 void BackupWorker::run() {
     QElapsedTimer timer;
     timer.start();
 
+    // 定义进度回调：将 C++ 信号转发给 Qt 信号槽系统
     auto cb = [this](size_t cur, size_t tot, const std::string& msg) {
         emit progressUpdated(static_cast<quint64>(cur),
                              static_cast<quint64>(tot),
@@ -42,6 +48,7 @@ void BackupWorker::run() {
     try {
         size_t count = 0;
         if (m_mode == Backup) {
+            // 根据输入类型选择备份模式（目录或文件列表）
             if (m_backupType == FileList) {
                 std::vector<std::string> paths;
                 for (const auto& f : m_fileList) paths.push_back(f.toStdString());
@@ -51,7 +58,8 @@ void BackupWorker::run() {
             } else {
                 count = BackupEngine::backup(m_src, m_dst, cb);
             }
-            // Encrypt after backup if password is set
+            
+            // 【安全机制】：如果设置了密码，备份完成后立即进行 AES-256 加密
             if (!m_password.empty() && count > 0) {
                 emit progressUpdated(0, 1, "Encrypting archive...");
                 std::string tmpPath = m_dst + ".tmp";
@@ -59,10 +67,10 @@ void BackupWorker::run() {
                 std::filesystem::rename(m_dst, tmpPath, ec);
                 if (ec) throw std::runtime_error("Failed to prepare archive for encryption");
                 Crypto::encryptFile(tmpPath, m_dst, m_password);
-            try { std::filesystem::remove(tmpPath); } catch (...) {}
+                try { std::filesystem::remove(tmpPath); } catch (...) {}
             }
         } else { // Restore
-            // Decrypt before restore if encrypted
+            // 【安全机制】：检测归档是否加密，若加密则先解密再恢复
             if (Crypto::isEncryptedFile(m_src)) {
                 if (m_password.empty())
                     throw std::runtime_error("This archive is encrypted. Please enter a password.");
@@ -72,15 +80,16 @@ void BackupWorker::run() {
                 std::string origSrc = m_src;
                 m_src = tmpPath;
                 count = BackupEngine::restore(m_src, m_dst, cb);
-            try { std::filesystem::remove(m_src); } catch (...) {}
-            m_src = origSrc;
+                try { std::filesystem::remove(m_src); } catch (...) {}
+                m_src = origSrc;
             } else {
                 count = BackupEngine::restore(m_src, m_dst, cb);
             }
         }
+        
         qint64 elapsed = timer.elapsed();
         QString ts = (elapsed < 1000) ? QString("%1 ms").arg(elapsed)
-                    : (elapsed < 60000) ? QString("%1 s").arg(elapsed/1000.0,0,'f',1)
+                    : (elapsed < 60000) ? QString("%1 s").arg(elapsed/1000.0,'f',1)
                     : QString("%1 min %2 s").arg(elapsed/60000).arg((elapsed%60000)/1000);
 
         QString msg = (m_mode == Backup)
@@ -1220,10 +1229,14 @@ void MainWindow::onEncFinished(bool ok, const QString& msg) {
 //  Pack/Unpack - Worker
 // =====================================================================
 
+/**
+ * @brief 打包/解包异步工作线程执行逻辑
+ * @details 负责文件内容的二进制读写及 Windows FILETIME 元数据的采集与还原。
+ */
 void PackWorker::run() {
     try {
         if (m_action == Pack) {
-            // Read files into entries
+            // 读取文件并采集元数据
             std::vector<datasoftware::FileEntry> entries;
             size_t total = m_fileList.size();
             for (int i = 0; i < m_fileList.size(); ++i) {
@@ -1237,9 +1250,10 @@ void PackWorker::run() {
                 if (sz > 0) in.read(buf.data(), sz);
                 in.close();
 
+                // 创建扁平化存储的 FileEntry
                 datasoftware::FileEntry fe(name, static_cast<uint64_t>(sz), std::move(buf));
 
-                // Read metadata
+                // 采集 Windows FILETIME 元数据
                 WIN32_FILE_ATTRIBUTE_DATA info;
                 if (GetFileAttributesExW(std::filesystem::path(path).c_str(),
                                          GetFileExInfoStandard, &info)) {
@@ -1260,7 +1274,7 @@ void PackWorker::run() {
             emit operationFinished(true, QString("Packed %1 files into %2")
                                    .arg(total).arg(QString::fromStdString(m_dst)));
         } else {
-            // Unpack
+            // 解包流程：读取归档并还原文件系统状态
             emit progressUpdated(0, 1, "Reading archive...");
             auto entries = datasoftware::ArchiveReader::read(m_src);
 
@@ -1280,7 +1294,7 @@ void PackWorker::run() {
                     out.write(entry.data.data(), entry.fileSize);
                 out.close();
 
-                // Restore metadata
+                // 还原元数据：时间戳与属性位掩码
                 if (!entry.metadata.isEmpty()) {
                     HANDLE hFile = CreateFileW(filePath.c_str(), FILE_WRITE_ATTRIBUTES,
                                                FILE_SHARE_READ | FILE_SHARE_WRITE,
